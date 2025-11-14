@@ -27,6 +27,7 @@ class OpenAILLM(BaseLLM):
         "gpt-3.5-turbo-16k": 16385,
         "gpt-3.5-turbo-1106": 16385,
         "gpt-3.5-turbo-16k-0613": 16385,
+        "gpt-4o-mini": 128000,
         "text-ada-001": 2049,
         "ada": 2049,
         "text-babbage-001": 2040,
@@ -169,7 +170,7 @@ class OpenAILLM(BaseLLM):
 
 
         """
-        model_name = "gpt-3.5-turbo-1106"
+        model_name = "gpt-4o-mini"
         if "model_name" in kwargs:
             model_name = kwargs["model_name"]
         if model_name not in self.get_model_names():
