@@ -15,3 +15,4 @@ models
 wav2vec2_checkpoints
 pretrained_models
 openCHA.egg-info
+chavenv/
