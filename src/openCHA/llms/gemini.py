@@ -14,8 +14,10 @@ class GeminiLLM(BaseLLM):
     Documentação oficial: https://ai.google.dev/gemini-api/docs/get-started/python
     
     Modelos suportados:
-        - gemini-pro: Modelo principal para tarefas de texto
-        - gemini-pro-vision: Modelo com suporte a imagens e texto
+        - gemini-2.0-flash-exp: Modelo experimental mais recente
+        - gemini-1.5-pro: Modelo Pro com alta capacidade
+        - gemini-1.5-flash: Modelo rápido e eficiente
+        - gemini-1.0-pro: Modelo Pro da primeira geração
     
     Exemplos de uso:
         >>> llm = GeminiLLM()
