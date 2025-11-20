@@ -3,7 +3,7 @@ from openCHA.llms.multi_llm_manager import MultiLLMManager
 def main():
     manager = MultiLLMManager()
 
-    query = "Quais são os sintomas iniciais de pneumonia e quando devo procurar atendimento médico?"
+    query = "Explique o que é IA."
     result = manager.generate_all(query)
 
     print("\n=== RESPOSTAS ===")

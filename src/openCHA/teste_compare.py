@@ -5,11 +5,11 @@ if __name__ == "__main__":
 
     # (Opcional) Definir as chaves aqui se não quiser usar interface
     import os
-    os.environ["OPENAI_API_KEY"] = "chave api"
-    os.environ["GEMINI_API_KEY"] = "chave api"
-    os.environ["DEEPSEEK_API_KEY"] = "chave api"
+    os.environ["OPENAI_API_KEY"] = "chaveapi"
+    os.environ["GEMINI_API_KEY"] = "chaveapi"
+    os.environ["DEEPSEEK_API_KEY"] = "chaveapi"
 
-    query = "Quais são os sintomas iniciais de pneumonia?"
+    query = "Quais são os sintomas inicias de Câncer?"
 
     resultado = cha.run(
         query=query,
