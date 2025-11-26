@@ -48,7 +48,7 @@ def exemplo_2_comparacao_completa():
 
     # Comparar 3 LLMs - CADA UM COM SEU PRÓPRIO ORCHESTRATOR
     resultado = cha.run(
-        query="Explique o que são redes convulucionais?",
+        query="Discorra sobre AIDS?",
         use_multi_llm=True,  # ← Ativa comparação
         compare_models=['chatgpt', 'gemini', 'deepseek'],
         max_tokens=300,
