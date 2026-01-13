@@ -40,6 +40,8 @@ class Orchestrator(BaseModel):
         then tasks will be executed one by one till the **Task Planner** decides that no more information is needed.
         Finally the **Task Planner** final answer will be routed to the **Final Response Generator** to generate an empathic final
         response that is returned to the user.
+
+        ← NOVO: Agora valida se a query é sobre saúde antes de processar.
     """
 
     planner: BasePlanner = None
@@ -62,6 +64,7 @@ class Orchestrator(BaseModel):
     previous_actions: List[str] = []
     current_actions: List[str] = []
     runtime: Dict[str, bool] = {}
+    restrict_to_health_only: bool = True  # ← NOVO: restrição de saúde
 
     class Config:
         """Configuration for this pydantic object."""
@@ -83,6 +86,67 @@ class Orchestrator(BaseModel):
             if log_name == "error":
                 self.error_logger.debug(message)
 
+    # ← NOVO: Método para validar se query é sobre saúde
+    def _is_health_related(self, query: str) -> bool:
+        """
+        Valida se a query é relacionada a saúde/medicina.
+
+        Este método implementa a validação de domínio para garantir que
+        o assistente responde APENAS a perguntas sobre saúde.
+
+        Args:
+            query (str): Texto da query a validar
+
+        Returns:
+            bool: True se é sobre saúde, False caso contrário
+        """
+        health_keywords = [
+            # Geral
+            'saúde', 'médico', 'doutor', 'doença', 'medicamento', 'sintoma',
+            'tratamento', 'diagnóstico', 'hospital', 'clínica', 'enfermeiro',
+            'remédio', 'cirurgia', 'paciente', 'cura', 'bem-estar', 'saude',
+
+            # Específico
+            'inflamação', 'infecção', 'dor', 'febre', 'alergia', 'vitamina',
+            'exercício', 'dieta', 'alimentação', 'nutrição', 'esporte',
+
+            # Mental
+            'saúde mental', 'depressão', 'ansiedade', 'psicólogo', 'terapeuta',
+            'estresse', 'insônia', 'sono', 'stress', 'terapia',
+
+            # Preventivo
+            'vacina', 'imunização', 'prevenção', 'vacinação',
+
+            # Doenças comuns
+            'covid', 'diabetes', 'pressão', 'colesterol', 'hipertensão',
+            'asma', 'artrite', 'gripe', 'resfriado', 'câncer', 'acidente',
+            'infarto', 'avc', 'doença cardíaca',
+
+            # Corpo e anatomia
+            'coração', 'pulmão', 'fígado', 'rim', 'cérebro', 'osso',
+            'músculos', 'pele', 'cabelo', 'dentes', 'olhos', 'ouvidos',
+            'estômago', 'intestino', 'sangue', 'pressão arterial',
+
+            # Procedimentos
+            'cirurgia', 'exame', 'teste', 'raio-x', 'ressonância', 'ultrassom',
+            'eletrocardiograma', 'ekg', 'tomografia', 'endoscopia',
+
+            # Convalescença
+            'recuperação', 'reabilitação', 'fisioterapia', 'cicatrização',
+        ]
+
+        query_lower = query.lower().strip()
+
+        # Verifica se tem pelo menos uma palavra-chave
+        is_health = any(keyword in query_lower for keyword in health_keywords)
+
+        self.print_log(
+            "orchestrator",
+            f"Classificação de domínio: '{query[:50]}...' → {'✅ Saúde' if is_health else '❌ Outro domínio'}"
+        )
+
+        return is_health
+
     @classmethod
     def initialize(
         self,
@@ -95,6 +159,7 @@ class Orchestrator(BaseModel):
         available_tasks: Optional[List[str]] = None,
         previous_actions: List[Action] = None,
         verbose: bool = False,
+        restrict_to_health_only: bool = True,  # ← NOVO
         **kwargs,
     ) -> Orchestrator:
         """
@@ -111,6 +176,7 @@ class Orchestrator(BaseModel):
             available_tasks (List[str]): List of available task using TaskType.
             previous_actions (List[Action]): List of previous actions.
             verbose (bool): Specifies if the debugging logs be printed or not.
+            restrict_to_health_only (bool): Se True, restringe respostas apenas a saúde. (NOVO)
             **kwargs (Any): Additional keyword arguments.
         Return:
             Orchestrator: Initialized Orchestrator instance.
@@ -135,7 +201,8 @@ class Orchestrator(BaseModel):
                     response_generator_llm=LLMType.OPENAI,
                     response_generator_name=ResponseGeneratorType.BASE_GENERATOR,
                     available_tasks=[TaskType.SERPAPI, TaskType.EXTRACT_TEXT],
-                    verbose=self.verbose,
+                    verbose=verbose,
+                    restrict_to_health_only=True,  # ← NOVO
                     **kwargs
                 )
 
@@ -227,6 +294,7 @@ class Orchestrator(BaseModel):
             final_answer_generator_logger=final_answer_generator_logger,
             promptist_logger=promptist_logger,
             error_logger=error_logger,
+            restrict_to_health_only=restrict_to_health_only,  # ← NOVO
         )
 
     def process_meta(self) -> bool:
@@ -376,6 +444,9 @@ class Orchestrator(BaseModel):
             This method generates the final answer based on the provided query and thinker.
             It calls the generate method of the response generator and returns the generated answer.
 
+            ← NOVO: Valida se a query é sobre saúde antes de gerar resposta.
+                    Esta é a camada final de defesa contra perguntas fora do domínio.
+
         Args:
             query (str): Input query.
             thinker (str): Thinking component.
@@ -383,6 +454,18 @@ class Orchestrator(BaseModel):
             str: Final generated answer.
 
         """
+        # ← NOVO: CAMADA 3 DE DEFESA - Valida domínio antes de gerar resposta final
+        if self.restrict_to_health_only and not self._is_health_related(query):
+            error_msg = (
+                "Desculpe, posso responder apenas a perguntas relacionadas a saúde, "
+                "medicina e bem-estar. Por favor, faça uma pergunta sobre esses tópicos."
+            )
+            self.print_log(
+                "response_generator",
+                f"Query rejeitada na geração final (não é sobre saúde): {query[:100]}"
+            )
+            logging.warning(f"Query rejeitada em generate_final_answer: {query[:100]}")
+            return error_msg
 
         retries = 0
         while retries < self.max_final_answer_execute_retries:
@@ -392,12 +475,24 @@ class Orchestrator(BaseModel):
                     if "response_generator_prefix_prompt" in kwargs
                     else ""
                 )
-                return self.response_generator.generate(
-                    query=query,
-                    thinker=thinker,
-                    prefix=prefix,
-                    **kwargs,
+
+                # ← NOVO: Passa system_instruction de saúde se configurado
+                health_system_instruction = kwargs.get(
+                    "response_generator_system_instruction",
+                    None
                 )
+
+                generate_kwargs = {
+                    "query": query,
+                    "thinker": thinker,
+                    "prefix": prefix,
+                }
+
+                if health_system_instruction:
+                    generate_kwargs["system_instruction"] = health_system_instruction
+
+                return self.response_generator.generate(**generate_kwargs)
+
             except Exception as e:
                 print(e)
                 retries += 1
@@ -419,6 +514,8 @@ class Orchestrator(BaseModel):
             If any errors occur during execution, the loop retries a limited number of times before setting a final error response.
             Finally, it generates the final response using the prompt and thinker, and returns the final response along with the previous actions.
 
+            ← NOVO: Valida se a query é sobre saúde antes de processar.
+
         Args:
             query (str): Input query.
             meta (List[str]): Meta information.
@@ -430,6 +527,19 @@ class Orchestrator(BaseModel):
 
 
         """
+        # ← NOVO: CAMADA 2 DE DEFESA - Valida domínio no início
+        if self.restrict_to_health_only and not self._is_health_related(query):
+            error_msg = (
+                "Desculpe, posso responder apenas a perguntas relacionadas a saúde, "
+                "medicina e bem-estar. Por favor, faça uma pergunta sobre esses tópicos."
+            )
+            self.print_log(
+                "orchestrator",
+                f"Query rejeitada no início (não é sobre saúde): {query[:100]}"
+            )
+            logging.warning(f"Query rejeitada em run(): {query[:100]}")
+            return error_msg
+
         if meta is None:
             meta = []
         i = 0

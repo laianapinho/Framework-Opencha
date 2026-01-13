@@ -24,19 +24,22 @@ logger = logging.getLogger(__name__)  # Configura o logger deste arquivo
 class openCHA(BaseModel):
     """
     Classe principal do openCHA - Sistema de IA com Orquestração Completa e Multi-LLM.
-    
-    Decide se vai rodar um agente simples (modo normal) ou uma comparação complexa 
+
+    ✅ OTIMIZADO: Usa TreeOfThoughtPlanner com timeout aumentado
+
+    Decide se vai rodar um agente simples (modo normal) ou uma comparação complexa
     entre vários agentes (modo Multi-LLM).
-    
+
     Recursos:
-        - Modo Normal: Um agente com orquestração completa (planner + generator)
+        - Modo Normal: Um agente com orquestração completa (Tree of Thought)
         - Modo Multi-LLM: Comparação entre múltiplos modelos (ChatGPT, Gemini, DeepSeek)
         - Interface gráfica integrada (Gradio)
         - Suporte a upload de arquivos
         - Histórico de conversação
         - Cache inteligente
         - Retry automático em falhas
-    
+        - Timeout aumentado para TreeOfThought
+
     Exemplos:
         >>> # Modo Normal
         >>> agent = openCHA()
@@ -59,7 +62,7 @@ class openCHA(BaseModel):
     previous_actions: List[Action] = Field(default_factory=list)
     orchestrator: Optional[Orchestrator] = None  # O cérebro (inicialmente desligado/None)
     planner_llm: str = LLMType.OPENAI  # Qual IA vai planejar (padrão GPT)
-    planner: str = PlannerType.TREE_OF_THOUGHT  # Qual estratégia usar
+    planner: str = PlannerType.TREE_OF_THOUGHT  # ✅ MANTÉM Tree of Thought (é o único disponível)
     datapipe: str = DatapipeType.MEMORY  # Onde guardar memória
     promptist: str = ""  # Otimizador de prompts (opcional)
     response_generator_llm: str = LLMType.OPENAI  # Qual IA vai escrever a resposta final
@@ -70,11 +73,11 @@ class openCHA(BaseModel):
     # --- NOVAS Configurações para o MultiLLMManager ---
     multi_llm: Optional[MultiLLMManager] = None  # O gerenciador de múltiplos modelos (inicialmente None)
 
-    # Configurações que serão passadas para o MultiLLMManager quando ele for criado
+    # ✅ OTIMIZADO: Configurações aumentadas para Tree of Thought
     multi_llm_enable_cache: bool = True  # Salvar respostas para economizar $
-    multi_llm_timeout: int = 180  # Tempo limite em segundos (3 minutos para Tree of Thought)
+    multi_llm_timeout: int = 500  # ✅ AUMENTADO: 180 segundos (3 minutos) para Tree of Thought
     multi_llm_max_workers: int = 3  # Quantos modelos rodam ao mesmo tempo
-    multi_llm_enable_retry: bool = True  # Tentar de novo se falhar
+    multi_llm_enable_retry: bool = True  # ✅ ATIVADO: Tentar de novo se falhar
     multi_llm_retry_attempts: int = 2  # Quantas tentativas extras
 
     class Config:
@@ -87,10 +90,10 @@ class openCHA(BaseModel):
     ) -> str:
         """
         Formata a lista de mensagens [('oi', 'olá')] em um texto único para a IA ler.
-        
+
         Args:
             chat_history: Lista de tuplas (mensagem_usuario, resposta_agente)
-        
+
         Returns:
             str: Histórico formatado como texto
         """
@@ -111,7 +114,7 @@ class openCHA(BaseModel):
         PADRÃO SINGLETON (Iniciação Preguiçosa):
         Só cria o MultiLLMManager se ele ainda não existir.
         Isso economiza memória se o usuário só quiser usar o modo simples.
-        
+
         Returns:
             MultiLLMManager: Instância do gerenciador de múltiplos modelos
         """
@@ -120,9 +123,9 @@ class openCHA(BaseModel):
             # Instancia a classe importada passando as configs definidas acima
             self.multi_llm = MultiLLMManager(
                 enable_cache=self.multi_llm_enable_cache,
-                default_timeout=self.multi_llm_timeout,
+                default_timeout=self.multi_llm_timeout,  # ✅ 180 segundos
                 max_workers=self.multi_llm_max_workers,
-                enable_retry=self.multi_llm_enable_retry,
+                enable_retry=self.multi_llm_enable_retry,  # ✅ Retry ativado
                 retry_attempts=self.multi_llm_retry_attempts,
             )
             logger.info("MultiLLMManager inicializado com sucesso")
@@ -138,13 +141,13 @@ class openCHA(BaseModel):
         """
         Método Wrapper: Pega o pedido do usuário e repassa para o MultiLLMManager.
         É aqui que a mágica da comparação acontece.
-        
+
         Args:
             query: Pergunta ou comando a ser processado
             models: Lista de modelos específicos (None = todos disponíveis)
             parallel: Se True, executa em paralelo; se False, sequencial
             **kwargs: Parâmetros extras (temperature, max_tokens, etc)
-        
+
         Returns:
             Dict[str, Any]: Dicionário com estrutura MultiLLMResultFull contendo:
                 - responses: Dict com respostas de cada modelo
@@ -153,14 +156,14 @@ class openCHA(BaseModel):
                 - generation_times: Dict com tempos de geração
                 - errors: Dict com erros (se houver)
                 - metadata: Estatísticas agregadas
-        
+
         Raises:
             ValueError: Se a query estiver vazia
         """
         if not query or not query.strip():
             raise ValueError("Query não pode estar vazia")
 
-        logger.info(f"Comparando respostas (COM ORQUESTRAÇÃO) para query: {query[:100]}...")
+        logger.info(f"Comparando respostas (COM ORQUESTRAÇÃO TREE OF THOUGHT) para query: {query[:100]}...")
 
         # Pega (ou cria) o gerenciador
         manager = self.get_multi_llm()
@@ -189,12 +192,12 @@ class openCHA(BaseModel):
         """
         Versão mais detalhada da comparação, retornando estatísticas de tempo
         e análise comparativa entre modelos.
-        
+
         Args:
             query: Pergunta ou comando
             models: Lista de modelos específicos (None = todos)
             **kwargs: Parâmetros extras
-        
+
         Returns:
             Dict[str, Any]: Dicionário com análise comparativa incluindo:
                 - query: Query original
@@ -206,32 +209,32 @@ class openCHA(BaseModel):
         return manager.compare_responses_with_orchestration(query, models=models, **kwargs)
 
     def compare_llm_responses(
-        self, 
-        query: str, 
+        self,
+        query: str,
         models: Optional[List[str]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
         ← NOVO MÉTODO ←
-        
+
         Wrapper simplificado para uso na Interface Gráfica (UI).
         Sempre executa em modo paralelo para melhor performance.
-        
+
         Este método é chamado pelo respond() quando o usuário ativa o Multi-LLM na UI.
         É uma versão "amigável" do compare_llm_responses_full() que sempre usa
         as melhores configurações para interface gráfica.
-        
+
         Args:
             query: Pergunta a ser processada
             models: Lista de modelos a comparar (None = todos disponíveis)
             **kwargs: Parâmetros extras (temperature, max_tokens, etc)
-        
+
         Returns:
             Dict[str, Any]: Dicionário com estrutura MultiLLMResultFull
-        
+
         Raises:
             ValueError: Se query estiver vazia ou modelos inválidos
-        
+
         Exemplos:
             >>> agent = openCHA()
             >>> results = agent.compare_llm_responses(
@@ -242,7 +245,7 @@ class openCHA(BaseModel):
             >>> print(results['times']['chatgpt'])
         """
         logger.debug(f"compare_llm_responses() chamado para query: {query[:50]}...")
-        
+
         return self.compare_llm_responses_full(
             query=query,
             models=models,
@@ -261,14 +264,16 @@ class openCHA(BaseModel):
         """
         MODO CLÁSSICO (Single Agent):
         Executa a lógica original do openCHA para um único agente.
-        
+
+        ✅ OTIMIZADO: Usa TreeOfThoughtPlanner (único disponível)
+
         Args:
             query: Pergunta ou comando
             chat_history: Histórico da conversa
             tasks_list: Lista de ferramentas/tarefas disponíveis
             use_history: Se True, usa contexto da conversa anterior
             **kwargs: Parâmetros extras
-        
+
         Returns:
             str: Resposta do agente
         """
@@ -282,10 +287,13 @@ class openCHA(BaseModel):
 
         # Se o 'cérebro' (orchestrator) não existe, cria um agora
         if self.orchestrator is None:
-            logger.info("Inicializando Orchestrator (MODO NORMAL)...")
+            logger.info("Inicializando Orchestrator com TreeOfThoughtPlanner...")
+            logger.info("⏱️  AVISO: Tree of Thought pode levar 5-30 segundos para responder")
+            logger.info("   Isso é NORMAL! O sistema está pensando em múltiplas estratégias.")
+
             self.orchestrator = Orchestrator.initialize(
                 planner_llm=self.planner_llm,
-                planner_name=self.planner,  # Ex: Tree of Thought
+                planner_name=PlannerType.TREE_OF_THOUGHT,  # ✅ Usa Tree of Thought
                 datapipe_name=self.datapipe,
                 promptist_name=self.promptist,
                 response_generator_llm=self.response_generator_llm,
@@ -295,7 +303,7 @@ class openCHA(BaseModel):
                 verbose=self.verbose,
                 **kwargs,
             )
-            logger.info("Orchestrator inicializado")
+            logger.info("Orchestrator inicializado com sucesso")
 
         # Manda o agente executar a tarefa
         response = self.orchestrator.run(
@@ -323,11 +331,11 @@ class openCHA(BaseModel):
     ) -> Tuple[str, List[Tuple[str, str]]]:
         """
         ← MÉTODO ATUALIZADO ←
-        
+
         Callback para Interface Gráfica (UI).
         Recebe as chaves de API da tela e configura o ambiente.
         Agora suporta tanto modo normal quanto Multi-LLM!
-        
+
         Args:
             message: Mensagem do usuário
             openai_api_key_input: API key da OpenAI
@@ -339,7 +347,7 @@ class openCHA(BaseModel):
             tasks_list: Lista de tarefas disponíveis
             use_multi_llm: Se True, ativa modo de comparação entre LLMs
             compare_models: Lista de modelos a comparar (ex: ['chatgpt','gemini'])
-        
+
         Returns:
             Tuple[str, List[Tuple[str, str]]]: Tupla (mensagem_limpa, chat_history_atualizado)
         """
@@ -354,19 +362,19 @@ class openCHA(BaseModel):
             if use_multi_llm:
                 logger.info("🌐 Respond: modo Multi-LLM ativado")
                 logger.info(f"Modelos selecionados: {compare_models}")
-                
+
                 # Chama a comparação de múltiplos modelos
                 results = self.compare_llm_responses(
                     query=message,
                     models=compare_models if compare_models else None,
                 )
-                
+
                 # Formata os resultados em texto legível
                 response = self._format_multi_llm_results(results)
-                
+
             else:
                 # Modo normal: um único agente
-                logger.info("🤖 Respond: modo Normal (single agent)")
+                logger.info("🤖 Respond: modo Normal (single agent) com TreeOfThought")
                 response = self._run(
                     query=message,
                     chat_history=chat_history,
@@ -437,11 +445,11 @@ class openCHA(BaseModel):
     def upload_meta(self, history: List[Tuple], file: Any) -> List[Tuple]:
         """
         Lida com upload de arquivos na UI.
-        
+
         Args:
             history: Histórico atual do chat
             file: Arquivo enviado pelo usuário
-        
+
         Returns:
             List[Tuple]: Histórico atualizado com o arquivo
         """
@@ -465,7 +473,9 @@ class openCHA(BaseModel):
         """
         O NOVO PONTO DE ENTRADA PRINCIPAL.
         Decide se roda o modo normal ou o modo de comparação (Multi-LLM).
-        
+
+        ✅ OTIMIZADO: Usa TreeOfThoughtPlanner com timeout aumentado
+
         Args:
             query: Pergunta ou comando
             chat_history: Histórico da conversa
@@ -474,11 +484,11 @@ class openCHA(BaseModel):
             use_multi_llm: Se True, ativa comparação entre múltiplos modelos
             compare_models: Lista de modelos a comparar
             **kwargs: Parâmetros extras
-        
+
         Returns:
-            str: Resposta formatada (texto simples para modo normal, 
+            str: Resposta formatada (texto simples para modo normal,
                  relatório comparativo para Multi-LLM)
-        
+
         Examples:
             >>> # Modo Normal
             >>> agent = openCHA()
@@ -503,7 +513,7 @@ class openCHA(BaseModel):
             # --- DECISÃO DE ROTEAMENTO ---
             # Se o usuário pediu 'use_multi_llm=True', vai para o modo comparação
             if use_multi_llm:
-                logger.info("🌐 Executando em MODO COMPARAÇÃO COM ORQUESTRAÇÃO COMPLETA")
+                logger.info("🌐 Executando em MODO COMPARAÇÃO COM ORQUESTRAÇÃO TREE OF THOUGHT")
                 logger.info(f"Modelos: {compare_models if compare_models else 'todos disponíveis'}")
 
                 # Chama a comparação completa
@@ -517,7 +527,7 @@ class openCHA(BaseModel):
 
             # --- MODO PADRÃO ---
             # Se não, roda apenas o _run normal (um agente)
-            logger.info("🤖 Executando em MODO NORMAL (single agent)")
+            logger.info("🤖 Executando em MODO NORMAL (single agent com TreeOfThought)")
             return self._run(
                 query=query,
                 chat_history=chat_history,
@@ -535,16 +545,16 @@ class openCHA(BaseModel):
         """
         Transforma o JSON de resultados em um relatório de texto legível.
         Exibe tempos de planejamento e execução separadamente.
-        
+
         Args:
             results: Dicionário com estrutura MultiLLMResultFull
-        
+
         Returns:
             str: Relatório formatado em texto
         """
         output_lines = [
             "=" * 80,
-            "COMPARAÇÃO ENTRE MÚLTIPLOS LLMs (COM ORQUESTRAÇÃO COMPLETA)",
+            "COMPARAÇÃO ENTRE MÚLTIPLOS LLMs (COM ORQUESTRAÇÃO TREE OF THOUGHT)",
             "=" * 80,
             ""
         ]
@@ -601,7 +611,7 @@ class openCHA(BaseModel):
     def get_available_models(self) -> List[str]:
         """
         Helper para saber quais modelos estão disponíveis e funcionando.
-        
+
         Returns:
             List[str]: Lista de nomes dos modelos disponíveis
         """
