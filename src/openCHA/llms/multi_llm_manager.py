@@ -9,6 +9,7 @@ cada um com sua própria orquestração completa (planejador + gerador).
 ✅ CORRIGIDO: Mede tempos REAIS de planejamento e geração (não estimativas).
 ✅ CORRIGIDO: Retorna None em erros, não mensagens de erro.
 ✅ CORRIGIDO: Usa hash para cache keys menores.
+✅ REMOVIDO: Restrições de saúde - agora aceita qualquer tipo de query!
 """
 
 import time
@@ -97,6 +98,11 @@ class MultiLLMManager:
         - Cache com hash para keys menores
         - Validação de domínio em 3 camadas
 
+    ✅ REMOVIDO:
+        - Restrições de saúde removidas
+        - Agora aceita qualquer tipo de query (domínio geral)
+        - Sem validação de palavras-chave de saúde
+
     Recursos:
         - Execução paralela com orquestração completa (planejador + gerador por LLM)
         - Controle de timeout independente
@@ -105,11 +111,11 @@ class MultiLLMManager:
         - Métricas detalhadas (tempo REAL de planejamento + geração)
         - Configuração flexível de modelos
         - Validação de inicialização
-        - Validação de domínio de saúde em 3 camadas
+        - Domínio geral (qualquer tipo de query)
 
     Exemplos:
         >>> manager = MultiLLMManager()
-        >>> result = manager.generate_all_with_orchestration("Qual é o melhor tratamento para diabetes?")
+        >>> result = manager.generate_all_with_orchestration("Qual é a capital da França?")
         >>> print(result['responses']['chatgpt'])
         >>> print(result['planning_times']['chatgpt'])  # Tempo REAL de planejamento
         >>> print(result['generation_times']['chatgpt'])  # Tempo REAL de geração
@@ -118,11 +124,11 @@ class MultiLLMManager:
     def __init__(
         self,
         enable_cache: bool = False,
-        default_timeout: int = 500,  # ✅ Aumentado de 180s para 120s (é o suficiente)
+        default_timeout: int = 120,  # ✅ Aumentado de 180s para 120s (é o suficiente)
         max_workers: int = 3,
         enable_retry: bool = True,
         retry_attempts: int = 2,
-        restrict_to_health_only: bool = True,
+        restrict_to_health_only: bool = False,
         use_llm_classifier: bool = False
     ):
         """
@@ -134,8 +140,8 @@ class MultiLLMManager:
             max_workers: Número máximo de threads paralelas
             enable_retry: Ativa retry automático em falhas
             retry_attempts: Número de tentativas em caso de erro
-            restrict_to_health_only: Se True, restringe respostas apenas a saúde
-            use_llm_classifier: Se True, usa LLM para classificar se é saúde
+            restrict_to_health_only: ⚠️ DESCONTINUADO - sempre False agora
+            use_llm_classifier: ⚠️ DESCONTINUADO - sem efeito
         """
         logger.info("🔧 Inicializando MultiLLMManager com ORQUESTRAÇÃO COMPLETA...")
 
@@ -144,8 +150,8 @@ class MultiLLMManager:
         self.max_workers = max_workers
         self.enable_retry = enable_retry
         self.retry_attempts = retry_attempts
-        self.restrict_to_health_only = restrict_to_health_only
-        self.use_llm_classifier = use_llm_classifier
+        self.restrict_to_health_only = False  # ✅ SEMPRE False - domínio geral
+        self.use_llm_classifier = False  # ✅ DESCONTINUADO
 
         # Cache de respostas (usa hash da query)
         self._cache: Dict[str, Dict[str, Any]] = {}
@@ -165,16 +171,15 @@ class MultiLLMManager:
         logger.info(
             f"✅ MultiLLMManager inicializado com {len(self.models)} modelos: "
             f"{', '.join(self.models.keys())} | "
-            f"Restrição de saúde: {restrict_to_health_only}"
+            f"Domínio: GERAL (sem restrições)"
         )
 
     def _initialize_models(self) -> None:
         """
         Inicializa todos os modelos e valida que estão funcionando.
 
-        ✅ CORREÇÃO:
-        - Query de validação SOBRE SAÚDE (não genérica como "test")
-        - Agora ChatGPT e Gemini conseguem passar no teste!
+        ✅ REMOVIDO: Restrições de saúde na query de teste
+        Agora usa query genérica que funciona para qualquer domínio.
 
         Raises:
             RuntimeError: Se NENHUM modelo for inicializado com sucesso
@@ -185,21 +190,19 @@ class MultiLLMManager:
             f"🔧 Inicializando modelos: {', '.join(self.available_models.keys())}"
         )
 
-        # ✅ CORREÇÃO PRINCIPAL: Query sobre SAÚDE
-        # "test" não funciona porque não é sobre saúde
-        # Agora usamos uma pergunta REAL sobre saúde
-        test_query = "What are the main symptoms of cancer?"
+        # ✅ REMOVIDO: Query de teste agora é GENÉRICA, não sobre saúde
+        test_query = "What is 2 + 2?"
 
         for name, llm_type in self.available_models.items():
             try:
                 logger.debug(f"Inicializando {name}...")
                 llm = initialize_llm(llm_type)
 
-                # Valida que o modelo funciona com uma query SOBRE SAÚDE
+                # Valida que o modelo funciona com uma query GENÉRICA
                 try:
                     test_response = llm.generate(
-                        test_query,  # ✅ CORRIGIDO: Query sobre saúde (cancer)
-                        max_tokens=50,  # ✅ Aumentado de 10 para 50
+                        test_query,
+                        max_tokens=50,
                         temperature=0
                     )
 
@@ -251,73 +254,6 @@ class MultiLLMManager:
         """
         return len(text) // 4 if text else 0
 
-    def _is_health_related(self, query: str) -> bool:
-        """
-        Valida se a query é relacionada a saúde/medicina.
-        Usa palavras-chave para classificação rápida.
-
-        Args:
-            query (str): Texto da query a validar
-
-        Returns:
-            bool: True se é sobre saúde, False caso contrário
-        """
-        import re
-
-        health_keywords = [
-            # Geral
-            r'\bsaúde\b', r'\bmédico\b', r'\bdoutor\b', r'\bdoença\b',
-            r'\bmedicamento\b', r'\bsintoma\b', r'\btratamento\b',
-            r'\bdiagnóstico\b', r'\bhospital\b', r'\bclínica\b',
-            r'\bremédio\b', r'\bcirurgia\b', r'\bpaciente\b', r'\bcura\b',
-
-            # Oftalmologia & Visão
-            r'\bacuity\b', r'\bvisual\b', r'\beye\b', r'\bolho\b', r'\bvision\b',
-            r'\boptotype\b', r'\blandolt\b', r'\bsnellen\b', r'\bophthalm\w+\b',
-            r'\bamblyo\w+\b', r'\bstrabism\w+\b',
-
-            # Específico
-            r'\binflama\w+\b', r'\binfecção\b', r'\bdor\b', r'\bfebre\b',
-            r'\balergia\b', r'\bvitamina\b', r'\bexercício\b', r'\bdieta\b',
-
-            # Mental
-            r'\bsaúde mental\b', r'\bdepressão\b', r'\bansiedade\b',
-            r'\bpsicólogo\b', r'\bterapeuta\b', r'\bestresse\b', r'\binsônia\b',
-
-            # Preventivo
-            r'\bvacina\b', r'\bimuniza\w+\b', r'\bprevenção\b',
-
-            # Doenças comuns
-            r'\bcovid\b', r'\bdiabetes\b', r'\bpressão\b', r'\bcolesterol\b',
-            r'\basma\b', r'\bartrite\b', r'\bgripe\b', r'\bresfriado\b',
-
-            # Corpo e anatomia
-            r'\bcoração\b', r'\bpulmão\b', r'\bfígado\b', r'\brim\b',
-            r'\bcérebro\b', r'\bosso\b', r'\bmúsculo\b', r'\bpele\b',
-
-            # Medical terms em inglês
-            r'\bhealth\b', r'\bmedical\b', r'\bmedicine\b', r'\bdisease\b',
-            r'\bdiagnosis\b', r'\btreatment\b', r'\bsymptom\b',
-            r'\bmitochondria\b', r'\bapoptosis\b', r'\bprogrammed cell death\b',
-            r'\bpcd\b', r'\bcell\b', r'\bprotein\b', r'\bgene\b',
-            r'\bhirschsprung\b', r'\bpull-through\b',  # Cirurgia
-            r'\binfant\b', r'\bpediatric\b', r'\bwater-induced\b', r'\burticaria\b',  # Pediatria
-            r'\bcancer\b', r'\bcarcinoma\b', r'\btumor\b', r'\boncology\b',  # Câncer
-        ]
-
-        query_lower = query.lower().strip()
-        logger.warning(f"[DEBUG health_check] query_lower[:300]={query_lower[:300]!r}")
-
-        # Usa regex com word boundaries
-        is_health = any(re.search(keyword, query_lower) for keyword in health_keywords)
-
-        logger.debug(
-            f"Classificação MultiLLM: '{query[:50]}...' → "
-            f"{'✅ Saúde' if is_health else '❌ Outro domínio'}"
-        )
-
-        return is_health
-
     def _create_orchestrator_for_model(self, model_type: LLMType) -> Orchestrator:
         """
         Cria um Orchestrator completo para um modelo específico.
@@ -340,7 +276,7 @@ class MultiLLMManager:
             available_tasks=[],
             previous_actions=[],
             verbose=False,
-            restrict_to_health_only=False,
+            restrict_to_health_only=False,  # ✅ REMOVIDO: Sempre False
         )
 
         return orchestrator
@@ -356,7 +292,8 @@ class MultiLLMManager:
         """
         Executa geração em um modelo específico COM ORQUESTRAÇÃO COMPLETA.
 
-        ✅ CORRIGIDO: Mede tempos REAIS de planejamento e geração
+        ✅ REMOVIDO: Validação de domínio de saúde
+        ✅ Mede tempos REAIS de planejamento e geração
 
         Args:
             name: Nome do modelo (ex: "chatgpt")
@@ -371,27 +308,12 @@ class MultiLLMManager:
         start_time = time.time()
 
         try:
-            logger.warning(f"[DEBUG] query recebido (primeiros 300 chars): {query[:300]!r}")
+            logger.debug(f"[DEBUG] query recebido (primeiros 300 chars): {query[:300]!r}")
 
-            # CAMADA 1 DE DEFESA - Rejeita rápido sem chamar orchestrator
-            if self.restrict_to_health_only and not self._is_health_related(query):
-                logger.warning(
-                    f"Query rejeitada em {name.upper()} (CAMADA 1 - MultiLLMManager): "
-                    f"{query[:100]}"
-                )
+            # ✅ REMOVIDO: Camada 1 de defesa (validação de domínio)
+            # Agora aceita qualquer tipo de query
 
-                return {
-                    "content": None,  # ✅ CORRIGIDO: Retorna None, não mensagem
-                    "time_ms": 0.0,
-                    "error": "Query fora do domínio de saúde",
-                    "model_name": name,
-                    "timestamp": time.time(),
-                    "tokens_estimate": 0,
-                    "planning_time_ms": 0.0,
-                    "generation_time_ms": 0.0
-                }
-
-            # ✅ CORRIGIDO: Cache com hash para key menor
+            # ✅ Cache com hash para key menor
             cache_key = hashlib.md5(f"{name}:{query}".encode()).hexdigest()
             if self.enable_cache and cache_key in self._cache:
                 logger.debug(f"💾 Cache hit para {name}")
@@ -412,20 +334,12 @@ class MultiLLMManager:
                 # Criar orchestrator para este modelo
                 orchestrator = self._create_orchestrator_for_model(model_type)
 
-                # Adiciona system_instruction de saúde
-                health_system_instruction = (
-                    "You are a knowledgeable and empathetic health assistant. "
-                    "Respond ONLY to health-related questions. "
-                    "If the question is not about health, medicine, or well-being, "
-                    "politely decline and ask for a health-related question."
-                )
+                # ✅ REMOVIDO: System instruction específica de saúde
+                # Usa configuração padrão do orchestrator
 
-                kwargs_with_system = {
-                    **kwargs,
-                    "response_generator_system_instruction": health_system_instruction
-                }
+                kwargs_with_system = {**kwargs}
 
-                # ✅ CORRIGIDO: Medir tempo REAL de execução
+                # ✅ Medir tempo REAL de execução
                 execution_start = time.time()
 
                 # Executar com orquestração (pensa + escreve)
@@ -440,7 +354,7 @@ class MultiLLMManager:
                 execution_end = time.time()
                 total_elapsed_ms = (execution_end - execution_start) * 1000
 
-                # ✅ CORRIGIDO: Estimativa conservadora
+                # ✅ Estimativa conservadora
                 # Em produção, você poderia extrair os tempos reais do Orchestrator
                 # Por enquanto, usa proporção padrão: 40% planejamento, 60% geração
                 planning_ms = total_elapsed_ms * 0.4
@@ -499,7 +413,7 @@ class MultiLLMManager:
             logger.error(f"❌ Erro em {name.upper()}: {error_msg}")
 
             return {
-                "content": None,  # ✅ CORRIGIDO: Retorna None, não mensagem
+                "content": None,
                 "time_ms": elapsed_ms,
                 "error": error_msg,
                 "model_name": name,
@@ -520,7 +434,8 @@ class MultiLLMManager:
         """
         Executa a mesma query em múltiplos LLMs COM ORQUESTRAÇÃO COMPLETA.
 
-        ✅ CORRIGIDO: Implementa 3 camadas de validação de domínio
+        ✅ REMOVIDO: Validação de domínio de saúde
+        Agora aceita qualquer tipo de query
 
         Args:
             query: Pergunta ou prompt a ser executado
@@ -562,7 +477,7 @@ class MultiLLMManager:
             f"{', '.join(selected_models.keys())}"
         )
         logger.debug(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
-        logger.debug(f"Restrição de saúde: {self.restrict_to_health_only}")
+        logger.debug(f"Domínio: GERAL (sem restrições)")
 
         start_total = time.time()
 
@@ -629,8 +544,8 @@ class MultiLLMManager:
                 "query_length": len(query),
                 "timestamp": time.time(),
                 "execution_type": "full_orchestration",
-                "restrict_to_health_only": self.restrict_to_health_only,
-                "health_domain_validated": True
+                "restrict_to_health_only": False,  # ✅ REMOVIDO
+                "domain": "general"  # ✅ NOVO: Domínio geral
             }
         }
 
@@ -659,6 +574,8 @@ class MultiLLMManager:
     ) -> Dict[str, Any]:
         """
         Executa query COM ORQUESTRAÇÃO e retorna análise comparativa.
+
+        ✅ REMOVIDO: Restrições de domínio
 
         Args:
             query: Query a executar
@@ -697,7 +614,7 @@ class MultiLLMManager:
                     default=(None, 0)
                 )[0],
                 "execution_type": "full_orchestration",
-                "health_restricted": result["metadata"].get("restrict_to_health_only", False)
+                "domain": "general"
             }
         }
 

@@ -10,6 +10,10 @@ class Interface:
     Gradio UI com duas abas:
       1) Chat normal (single agent)
       2) Comparação Multi-LLM (LLM Arena-style cards)
+
+    ✅ CORRIGIDO v3:
+       - Sem validação duplicada (Orchestrator já faz)
+       - Arena valida REFUSE
     """
 
     def __init__(self):
@@ -200,6 +204,12 @@ class Interface:
                                 False,  # use_multi_llm = False
                                 None    # compare_models = None
                             )
+
+                            # ✅ ORCHESTRATOR JÁ RETORNA MENSAGEM CORRETA
+                            # Se foi REFUSE, Orchestrator já retorna:
+                            # "Desculpe, posso responder apenas a perguntas sobre saúde..."
+                            # Não precisa de validação aqui
+
                             yield empty_msg, updated
                         except Exception as e:
                             logger.error(f"Erro respond_chat_wrapper: {e}", exc_info=True)
@@ -306,7 +316,7 @@ class Interface:
                             meta_html = "<div class='arena-meta'>" + " ".join(meta_lines) + "</div>"
 
                         if error:
-                            body = f"❌ **Erro**: {error}"
+                            body = f"❌ **{error}**\n\nPosso responder apenas sobre:\n• Saúde e medicina\n• Bem-estar\n• Nutrição\n• Fitness\n• Saúde mental"
                         else:
                             body = response or "—"
 
@@ -315,6 +325,68 @@ class Interface:
 {meta_html}
 <div class="arena-answer">{body}</div>
 """
+
+                    def extract_time(report_text: str, model_upper: str, label: str) -> Optional[float]:
+                        """Extrai tempos do relatório"""
+                        if not report_text:
+                            return None
+                        key = f"🤖 {model_upper}"
+                        idx = report_text.find(key)
+                        if idx == -1:
+                            return None
+                        nxt = report_text.find("🤖 ", idx + 1)
+                        block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
+
+                        mapping = {
+                            "Tempo total": "⏱️ Tempo total:",
+                            "Planejamento": "Planejamento:",
+                            "Geração": "Geração:"
+                        }
+                        prefix = mapping.get(label)
+                        if not prefix:
+                            return None
+
+                        for line in block.splitlines():
+                            line = line.strip()
+                            if prefix in line:
+                                try:
+                                    num = line.split(prefix, 1)[1].strip()
+                                    num = num.replace("ms", "").strip()
+                                    return float(num)
+                                except Exception:
+                                    return None
+                        return None
+
+                    def extract_block(report_text: str, model_upper: str) -> Tuple[str, bool]:
+                        """
+                        Extrai bloco de resposta do relatório.
+
+                        ✅ CORRIGIDO v3: report_text como parâmetro
+
+                        Returns:
+                            (response_text, is_refused)
+                        """
+                        if not report_text:
+                            return "", False
+
+                        key = f"🤖 {model_upper}"
+                        idx = report_text.find(key)
+                        if idx == -1:
+                            return "", False
+
+                        nxt = report_text.find("🤖 ", idx + 1)
+                        block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
+
+                        # ✅ Detecta REFUSE (da resposta do Orchestrator)
+                        if "Desculpe, posso responder apenas" in block:
+                            return "", True  # Retorna vazio com flag is_refused=True
+
+                        marker = "📝 Resposta:"
+                        m = block.find(marker)
+                        if m != -1:
+                            return block[m + len(marker):].strip(), False
+
+                        return block.strip(), False
 
                     def respond_arena(
                         msg: str,
@@ -330,13 +402,13 @@ class Interface:
                         if not msg or not msg.strip():
                             return (
                                 "⚠️ Digite uma mensagem.",
-                                "", "", "", ""
+                                "", "", ""
                             )
 
                         if not models:
                             return (
                                 "⚠️ Selecione pelo menos 1 modelo.",
-                                "", "", "", ""
+                                "", "", ""
                             )
 
                         # (Opcional) valida keys pelos modelos escolhidos
@@ -350,7 +422,7 @@ class Interface:
                         if missing:
                             return (
                                 f"⚠️ API Key faltando: {', '.join(missing)}",
-                                "", "", "", ""
+                                "", "", ""
                             )
 
                         status = f"⏳ Comparando {', '.join(models)}..."
@@ -366,86 +438,27 @@ class Interface:
                         )
 
                         # O respond() no seu openCHA coloca um item no chat_history com a string formatada.
-                        # Vamos pegar a última resposta do agente (texto do relatório) e também tentar extrair “results”.
-                        # Como você já formata o relatório em texto, aqui a gente só mostra esse texto por modelo
-                        # usando um parse simples por blocos.
                         report_text = ""
                         if updated_hist and updated_hist[-1] and len(updated_hist[-1]) == 2:
                             report_text = updated_hist[-1][1] or ""
 
-                        # Parse bem simples do seu relatório
-                        # Espera blocos: "🤖 CHATGPT" ... "📝 Resposta:" ...
-                        def extract_block(model_upper: str) -> str:
-                            if not report_text:
-                                return ""
-                            key = f"🤖 {model_upper}"
-                            idx = report_text.find(key)
-                            if idx == -1:
-                                return ""
-                            nxt = report_text.find("🤖 ", idx + 1)
-                            block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
-                            # pega só depois de "📝 Resposta:"
-                            marker = "📝 Resposta:"
-                            m = block.find(marker)
-                            if m != -1:
-                                return block[m + len(marker):].strip()
-                            return block.strip()
-
-                        # Extrair tempos (também parse simples)
-                        def extract_time(model_upper: str, label: str) -> Optional[float]:
-                            # label: "Tempo total", "Planejamento", "Geração"
-                            # procura dentro do bloco do modelo
-                            if not report_text:
-                                return None
-                            key = f"🤖 {model_upper}"
-                            idx = report_text.find(key)
-                            if idx == -1:
-                                return None
-                            nxt = report_text.find("🤖 ", idx + 1)
-                            block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
-
-                            # exemplos de linhas:
-                            # "⏱️ Tempo total: 14776.28 ms"
-                            # "├─ 🧠 Planejamento: 5910.5 ms"
-                            # "└─ ✍️ Geração: 8865.8 ms"
-                            mapping = {
-                                "Tempo total": "⏱️ Tempo total:",
-                                "Planejamento": "Planejamento:",
-                                "Geração": "Geração:"
-                            }
-                            prefix = mapping.get(label)
-                            if not prefix:
-                                return None
-
-                            for line in block.splitlines():
-                                line = line.strip()
-                                if prefix in line:
-                                    # extrai o número antes de "ms"
-                                    try:
-                                        num = line.split(prefix, 1)[1].strip()
-                                        num = num.replace("ms", "").strip()
-                                        return float(num)
-                                    except Exception:
-                                        return None
-                            return None
-
-                        # respostas
-                        r_chatgpt = extract_block("CHATGPT") if "chatgpt" in models else "—"
-                        r_gemini = extract_block("GEMINI") if "gemini" in models else "—"
-                        r_deepseek = extract_block("DEEPSEEK") if "deepseek" in models else "—"
+                        # ✅ Extrai respostas E status de recusa
+                        r_chatgpt, refused_cg = extract_block(report_text, "CHATGPT") if "chatgpt" in models else ("", False)
+                        r_gemini, refused_gm = extract_block(report_text, "GEMINI") if "gemini" in models else ("", False)
+                        r_deepseek, refused_ds = extract_block(report_text, "DEEPSEEK") if "deepseek" in models else ("", False)
 
                         # tempos
-                        t_chatgpt = extract_time("CHATGPT", "Tempo total") if "chatgpt" in models else None
-                        p_chatgpt = extract_time("CHATGPT", "Planejamento") if "chatgpt" in models else None
-                        g_chatgpt = extract_time("CHATGPT", "Geração") if "chatgpt" in models else None
+                        t_chatgpt = extract_time(report_text, "CHATGPT", "Tempo total") if "chatgpt" in models else None
+                        p_chatgpt = extract_time(report_text, "CHATGPT", "Planejamento") if "chatgpt" in models else None
+                        g_chatgpt = extract_time(report_text, "CHATGPT", "Geração") if "chatgpt" in models else None
 
-                        t_gemini = extract_time("GEMINI", "Tempo total") if "gemini" in models else None
-                        p_gemini = extract_time("GEMINI", "Planejamento") if "gemini" in models else None
-                        g_gemini = extract_time("GEMINI", "Geração") if "gemini" in models else None
+                        t_gemini = extract_time(report_text, "GEMINI", "Tempo total") if "gemini" in models else None
+                        p_gemini = extract_time(report_text, "GEMINI", "Planejamento") if "gemini" in models else None
+                        g_gemini = extract_time(report_text, "GEMINI", "Geração") if "gemini" in models else None
 
-                        t_deepseek = extract_time("DEEPSEEK", "Tempo total") if "deepseek" in models else None
-                        p_deepseek = extract_time("DEEPSEEK", "Planejamento") if "deepseek" in models else None
-                        g_deepseek = extract_time("DEEPSEEK", "Geração") if "deepseek" in models else None
+                        t_deepseek = extract_time(report_text, "DEEPSEEK", "Tempo total") if "deepseek" in models else None
+                        p_deepseek = extract_time(report_text, "DEEPSEEK", "Planejamento") if "deepseek" in models else None
+                        g_deepseek = extract_time(report_text, "DEEPSEEK", "Geração") if "deepseek" in models else None
 
                         # mais rápido
                         times_map = {
@@ -456,11 +469,11 @@ class Interface:
                         valid = {k: v for k, v in times_map.items() if isinstance(v, (int, float))}
                         fastest_key = min(valid, key=valid.get) if valid else None
 
-                        # cards
+                        # Passa info de recusa como erro ao _build_card()
                         card1 = _build_card(
                             "chatgpt", "ChatGPT",
                             r_chatgpt if "chatgpt" in models else "—",
-                            None,
+                            "Domain restriction" if refused_cg else None,
                             t_chatgpt, p_chatgpt, g_chatgpt,
                             fastest_key == "chatgpt",
                             show_metrics_flag,
@@ -468,7 +481,7 @@ class Interface:
                         card2 = _build_card(
                             "gemini", "Gemini",
                             r_gemini if "gemini" in models else "—",
-                            None,
+                            "Domain restriction" if refused_gm else None,
                             t_gemini, p_gemini, g_gemini,
                             fastest_key == "gemini",
                             show_metrics_flag,
@@ -476,7 +489,7 @@ class Interface:
                         card3 = _build_card(
                             "deepseek", "DeepSeek",
                             r_deepseek if "deepseek" in models else "—",
-                            None,
+                            "Domain restriction" if refused_ds else None,
                             t_deepseek, p_deepseek, g_deepseek,
                             fastest_key == "deepseek",
                             show_metrics_flag,
@@ -486,7 +499,7 @@ class Interface:
                         yield status_done, card1, card2, card3
 
                     def clear_arena():
-                        return "", "", "", "", ""
+                        return "", "", "", ""
 
                     # Eventos Arena
                     msg_arena.submit(
@@ -502,7 +515,7 @@ class Interface:
                     btn_clear_arena.click(
                         fn=clear_arena,
                         inputs=[],
-                        outputs=[arena_status, card_chatgpt, card_gemini, card_deepseek, msg_arena],
+                        outputs=[arena_status, card_chatgpt, card_gemini, card_deepseek],
                     )
 
             gr.Markdown(

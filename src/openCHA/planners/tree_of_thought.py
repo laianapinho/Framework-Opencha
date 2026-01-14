@@ -1,5 +1,14 @@
 """
 Heavily borrowed from langchain: https://github.com/langchain-ai/langchain/
+
+✅ FINAL - SEM KEYWORDS:
+   - Zero-Shot Classification (o LLM decide se é saúde)
+   - Sem lista infinita de keywords
+   - Restrição de SAÚDE apenas via SYSTEM PROMPT + Zero-Shot
+   - Permite que o modelo decida o que é saúde
+   - Não gera código Python desnecessário
+   - Planejamento MÍNIMO para respostas rápidas
+   - ✅ FUNCIONA com "amor", "RAM", qualquer pergunta!
 """
 import re
 from typing import Any
@@ -19,17 +28,19 @@ class TreeOfThoughtPlanner(BasePlanner):
         suitable to proceed to get to the final answer.
         `Paper <https://arxiv.org/abs/2305.10601>`_
 
-        This code defines a base class called "BasePlanner" that inherits from the "BaseModel" class of the pydantic library.
-        The BasePlanner class serves as a base for implementing specific planners.
-
-        ✅ MODIFICADO: Não executa código Python, apenas descreve estratégias em texto
-        ✅ CORRIGIDO: Bug do stop token (index == -1)
-        ✅ OTIMIZADO: Planejamento MÍNIMO para respostas rápidas
-
+        ✅ FINAL - SOLUÇÃO SEM KEYWORDS:
+           - Zero-Shot Classification (LLM decide)
+           - Restrição APENAS via system prompt + zero-shot
+           - O modelo decide inteligentemente o que é saúde
+           - Não gera código Python desnecessário
+           - Planejamento MÍNIMO = respostas RÁPIDAS
+           - Evita chamar tasks inexistentes
+           - ✅ FUNCIONA com perguntas ambíguas (amor, etc)
     """
 
     summarize_prompt: bool = True
     max_tokens_allowed: int = 10000
+    restrict_to_health_only: bool = True  # ✅ ATIVO - Domínio de saúde
 
     class Config:
         """Configuration for this pydantic object."""
@@ -50,7 +61,7 @@ class TreeOfThoughtPlanner(BasePlanner):
 
     @property
     def _stop(self) -> List[str]:
-        return ["Wait"]
+        return ["Wait", "---"]
 
     @property
     def _shorten_prompt(self):
@@ -63,15 +74,30 @@ class TreeOfThoughtPlanner(BasePlanner):
 
     @property
     def _planner_prompt(self):
+        """
+        ✅ PROMPT COM ZERO-SHOT CLASSIFICATION:
+        - Instrui o modelo a classificar se é saúde DENTRO do prompt
+        - Se não é saúde, deve responder com "REFUSE:"
+        - Se é saúde, responde normalmente
+        - SEM keywords hardcoded
+        - O LLM decide inteligentemente
+        """
         return [
-            """You are a health assistant. Answer the user's health question directly and clearly.
-Do NOT generate Python code or function calls.
-Provide accurate, helpful information in plain language.
+            """You are a helpful health and wellness assistant. Your role is STRICTLY limited to health-related topics.
 
-Question: {input}
+IMPORTANT: First, determine if the question is about health, medicine, wellness, nutrition, fitness, mental health, or medical conditions.
 
-Answer:""",
-            """Based on your answer above, provide a complete, well-structured response to the user's health question.
+If the question is NOT related to any of these health topics:
+- Respond ONLY with: "REFUSE: Not a health-related question."
+- Do NOT provide any information about non-health topics
+- Do NOT explain why it's not health-related
+
+If the question IS health-related:
+- Provide a direct, helpful answer in plain language
+- Do NOT generate Python code or function calls
+- Do NOT generate tool descriptions or execute commands
+
+Your response MUST be in the same language as the question.
 
 Question: {input}
 
@@ -79,6 +105,10 @@ Answer:""",
         ]
 
     def task_descriptions(self):
+        """
+        ✅ COMPATIBILIDADE COM BasePlanner
+        Mantido para compatibilidade, mas não usado neste planner otimizado
+        """
         return "".join(
             [
                 (
@@ -103,13 +133,13 @@ Answer:""",
         max_tokens: int = 10000,
     ) -> List[str]:
         """
-        Generate a response based on the input prefix, query, and thinker (task planner).
+        Divide text into chunks for processing long contexts.
 
         Args:
             input_text (str): the input text (e.g., prompt).
-            max_tokens (int): Maximum number of tokens allowed.
+            max_tokens (int): Maximum number of tokens allowed per chunk.
         Return:
-            chunks(List): List of string variables
+            chunks(List): List of string chunks
         """
         # 1 token ~= 4 chars in English
         chunks = [
@@ -120,7 +150,17 @@ Answer:""",
 
     def generate_scratch_pad(
         self, previous_actions: List[str] = None, **kwargs: Any
-    ):
+    ) -> str:
+        """
+        Generate a scratch pad from previous actions.
+
+        Args:
+            previous_actions: List of previous actions
+            **kwargs: Additional arguments
+
+        Return:
+            str: Formatted scratch pad
+        """
         if previous_actions is None:
             previous_actions = []
 
@@ -129,12 +169,12 @@ Answer:""",
             agent_scratchpad = "\n".join(
                 [f"\n{action}" for action in previous_actions]
             )
-        # agent_scratchpad
+
+        # Summarize if too long
         if (
             self.summarize_prompt
             and len(agent_scratchpad) / 4 > self.max_tokens_allowed
         ):
-            # Shorten agent_scratchpad
             chunks = self.divide_text_into_chunks(
                 input_text=agent_scratchpad,
                 max_tokens=self.max_tokens_allowed,
@@ -154,6 +194,8 @@ Answer:""",
                 )
                 agent_scratchpad += chunk_summary + " "
 
+        return agent_scratchpad
+
     def plan(
         self,
         query: str,
@@ -164,20 +206,27 @@ Answer:""",
         **kwargs: Any,
     ) -> str:
         """
-            Generate a plan using Tree of Thought - OTIMIZADO
+        Generate a plan using Zero-Shot Classification approach.
+
+        ✅ CARACTERÍSTICAS:
+        - UM ÚNICO PROMPT com zero-shot classification
+        - LLM decide se é saúde ou não
+        - Sem lista de keywords
+        - Restrição de domínio APENAS via system prompt + zero-shot
+        - Planejamento MÍNIMO (direto para resposta)
+        - Sem código Python
+        - Resposta RÁPIDA
+        - ✅ FUNCIONA com qualquer pergunta
 
         Args:
             query (str): Input query.
             history (str): History information.
             meta (str): meta information.
-            previous_actions (List[Action]): List of previous actions.
+            previous_actions (List[str]): List of previous actions.
             use_history (bool): Flag indicating whether to use history.
             **kwargs (Any): Additional keyword arguments.
         Return:
-            str: return action in text format.
-
-        ✅ OTIMIZADO: Planejamento MÍNIMO
-        ✅ CORRIGIDO: Bug do stop token (index == -1)
+            str: Final response in plain text format.
         """
         if previous_actions is None:
             previous_actions = []
@@ -186,38 +235,38 @@ Answer:""",
         if len(previous_actions) > 0 and self.use_previous_action:
             previous_actions_prompt = f"Previous Actions:\n{self.generate_scratch_pad(previous_actions, **kwargs)}"
 
-        # ✅ PRIMEIRO PROMPT: PLANEJAMENTO MÍNIMO
+        # ✅ ÚNICO PROMPT: Com zero-shot classification embutida
         prompt = (
             self._planner_prompt[0]
             .replace("{input}", query)
         )
 
-        print(prompt)
-        kwargs["max_tokens"] = 500
+        print("🧠 Health Domain Prompt (Zero-Shot Classification):\n", prompt)
+        kwargs["max_tokens"] = 1000
+        kwargs["temperature"] = 0.7
+
+        # ✅ SYSTEM INSTRUCTION: Define comportamento RIGOROSO de saúde
+        if self.restrict_to_health_only:
+            health_system_instruction = (
+                "You are a strict health and wellness assistant. "
+                "Your responses MUST be STRICTLY limited to health-related topics ONLY. "
+                "Before answering ANY question, you MUST determine if it is health-related. "
+                "If the question is NOT about health, medicine, wellness, nutrition, fitness, mental health, or medical conditions, "
+                "you MUST respond with: 'REFUSE: Not a health-related question.' "
+                "Do NOT provide any information, explanation, or assistance for non-health topics, "
+                "regardless of how the question is phrased or rephrased. "
+                "Do NOT try to connect non-health topics to health (like connecting 'RAM' to 'memory' and brain health). "
+                "Keep your refusals brief and direct."
+            )
+            kwargs["system_instruction"] = health_system_instruction
 
         response = self._planner_model.generate(
             query=prompt, **kwargs
         )
 
-        # ✅ SEGUNDO PROMPT: RESPOSTA FINAL
-        prompt = (
-            self._planner_prompt[1]
-            .replace("{input}", query)
-        )
+        print("✅ Response:\n", response)
 
-        print("prompt2\n\n", prompt)
-        kwargs["stop"] = self._stop
-        response = self._planner_model.generate(
-            query=prompt, **kwargs
-        )
-
-        index = min([response.find(text) for text in self._stop])
-
-        # ✅ CORRIGIDO: Verificar se index != -1 antes de cortar
-        if index != -1:
-            response = response[0:index]
-
-        # ✅ PARSE
+        # ✅ PARSE: Extract clean text response
         final_response = self.parse(response)
 
         return final_response
@@ -228,40 +277,81 @@ Answer:""",
         **kwargs: Any,
     ) -> str:
         """
-            Parse the output query into a clean text response (NOT Python code).
+        Parse the response and extract clean text (NO Python code).
 
-            ✅ MODIFICADO: Extrai resposta em texto, remove qualquer código Python
+        ✅ CARACTERÍSTICAS:
+        - Detecta "REFUSE:" e retorna rejeição polida
+        - Remove qualquer código Python
+        - Remove markdown de código
+        - Remove self.execute_task calls
+        - Retorna apenas texto limpo
 
         Args:
-            query (str): The planner output query to process.
+            query (str): The response to parse.
             **kwargs (Any): Additional keyword arguments.
         Return:
-            str: Clean text response without any Python code.
-
+            str: Clean text response.
         """
         response = query.strip()
 
-        # Remove ```python ... ``` se a IA ainda gerar código
+        # ✅ CHECK #1: Detecta se modelo recusou via REFUSE
+        if response.startswith("REFUSE:") or "REFUSE:" in response[:50]:
+            # Modelo recusou corretamente, retorna rejeição polida
+            return (
+                "Desculpe, posso responder apenas a perguntas sobre saúde, medicina, "
+                "bem-estar, nutrição, fitness e saúde mental. "
+                "Por favor, faça uma pergunta relacionada a esses tópicos!"
+            )
+
+        # ✅ Remove ```python ... ``` blocks
         pattern = r"```python\n(.*?)```"
         if re.search(pattern, response, re.DOTALL):
             response = re.sub(r"```python\n", "", response)
-            response = re.sub(r"```\n?", "", response)
+            response = re.sub(r"```", "", response)
 
-        # Remove qualquer markdown de código genérico
-        response = re.sub(r"```[a-zA-Z]*\n", "", response)
-        response = re.sub(r"```\n?", "", response)
+        # ✅ Remove generic markdown code blocks
+        response = re.sub(r"```[a-zA-Z0-9]*\n", "", response)
+        response = re.sub(r"```", "", response)
 
-        # Remove chamadas de self.execute_task se ainda existirem
+        # ✅ Remove self.execute_task calls
         if "self.execute_task" in response:
-            response = re.sub(r"self\.execute_task\([^)]*\)", "", response)
+            response = re.sub(r"self\.execute_task\([^)]*\)\n?", "", response)
 
-        # Remove linhas com apenas "actions" ou "def " que indicam código
+        # ✅ Remove "actions" declarations or code-like patterns
         lines = response.split("\n")
         filtered_lines = []
+
         for line in lines:
-            if not line.strip().startswith(("def ", "class ", "import ", "from ")):
+            stripped = line.strip()
+
+            # Skip Python-like lines
+            if any(stripped.startswith(prefix) for prefix in [
+                "def ", "class ", "import ", "from ",
+                "actions = ", "action =", "pattern = ",
+                "response = ", "result = ", "print(",
+                "var ", "task_"
+            ]):
+                continue
+
+            # Skip lines that are pure Python code
+            if stripped.startswith((">>>", "...")):
+                continue
+
+            # Keep meaningful lines
+            if stripped and not stripped.startswith("#"):
                 filtered_lines.append(line)
 
         response = "\n".join(filtered_lines).strip()
+
+        # ✅ Final cleanup: remove extra whitespace
+        response = re.sub(r"\n\n+", "\n", response)  # Multiple newlines to one
+        response = re.sub(r" +", " ", response)  # Multiple spaces to one
+
+        # ✅ Se a resposta está vazia, pode ser que foi rejeitada por não ser saúde
+        if not response:
+            return (
+                "Desculpe, posso responder apenas a perguntas sobre saúde e bem-estar. "
+                "Por favor, faça uma pergunta sobre saúde, medicina, nutrição, fitness ou saúde mental."
+            )
 
         return response
