@@ -218,6 +218,9 @@ class DeepSeekLLM(BaseLLM):
         system_message = kwargs.get("system_message", None)
         conversation_history = kwargs.get("conversation_history", None)
 
+        # Log do modelo e tokens sendo utilizados
+        print("here", max_tokens, model_name)
+
         # Prepara o prompt
         messages = self._prepare_prompt(query, system_message, conversation_history)
 
