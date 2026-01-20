@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-openCHA + Benchmark PubMedQA - Com Orquestração
-Teste 3 modelos com questões médicas reais
+openCHA + Benchmark Flexível - Com Orquestração
+Teste 3 modelos com qualquer dataset JSON (PubMedQA, CareQA, customizado, etc)
 """
 import sys
 sys.path.insert(0, '/home/laiana/Framework-Opencha/src')
-
 import os
 from openCHA.openCHA import openCHA
 from openCHA.benchmark_interface import BenchmarkInterface
+
+
 def main():
-    print("📊 openCHA + Benchmark PubMedQA")
-    print("=" * 50)
+    print("📊 openCHA + Benchmark Flexível (Qualquer Dataset JSON)")
+    print("=" * 70)
 
     # Cria o agente com orquestração
     cha = openCHA(
@@ -25,9 +26,10 @@ def main():
     print("🌐 Iniciando interface web...")
     print("📍 URL: http://localhost:7860")
     print("🤖 Modelos: ChatGPT | Gemini | DeepSeek")
-    print("✨ Modo: Benchmark PubMedQA (3 questões com orquestração)")
+    print("✨ Modo: Benchmark Flexível (upload qualquer JSON)")
+    print("📁 Suporta: PubMedQA, CareQA, e qualquer estrutura JSON customizada")
     print("🛑 Para parar: Ctrl+C")
-    print("=" * 50)
+    print("=" * 70)
     print()
 
     try:
@@ -36,14 +38,14 @@ def main():
         import gradio as gr
 
         interface = Interface()
-
         respond = cha.respond
         reset = cha.reset
         upload_meta = cha.upload_meta
         available_tasks = [key.value for key in TASK_TO_CLASS.keys()]
 
-        with gr.Blocks(theme=gr.themes.Soft(), title="openCHA") as demo:
-            gr.Markdown("# 🔷 openCHA + Benchmark PubMedQA")
+        with gr.Blocks(theme=gr.themes.Soft(), title="openCHA - Benchmark Flexível") as demo:
+            gr.Markdown("# 🔷 openCHA + Benchmark Flexível")
+            gr.Markdown("### 📊 Avalie qualquer dataset JSON com 3 modelos em paralelo")
 
             with gr.Accordion("🔑 API Keys", open=True):
                 with gr.Row():
@@ -59,11 +61,24 @@ def main():
                     btn = gr.Button("Enviar")
                     output = gr.Textbox(interactive=False, lines=10)
 
-                # ABA 2: Benchmark
-                with gr.Tab("📊 Benchmark"):
+                # ABA 2: Benchmark Flexível
+                with gr.Tab("📊 Benchmark Flexível"):
+                    gr.Markdown("""
+                    ### 🚀 Como usar:
+                    1. **Upload**: Selecione um arquivo JSON com suas perguntas e respostas
+                    2. **Detecção**: O sistema detecta automaticamente a estrutura do JSON
+                    3. **Confirmação**: Confirme ou edite o mapeamento de campos
+                    4. **Benchmark**: Execute a avaliação com os 3 modelos
+
+                    ### ✅ Formatos suportados:
+                    - **PubMedQA**: `{"QUESTION": "...", "final_decision": "yes/no/maybe"}`
+                    - **CareQA**: `[{"question": "...", "answer": "..."}, ...]`
+                    - **Customizado**: Qualquer JSON com pergunta e resposta esperada
+                    """)
+
                     benchmark = BenchmarkInterface()
                     benchmark.prepare_benchmark_tab(
-                        run_single_question=cha.run,  # ✅ CORRIGIDO: usar cha.run
+                        run_single_question=cha.run,
                         reset_fn=reset
                     )
 
@@ -75,6 +90,7 @@ def main():
         print(f"❌ Erro: {e}")
         import traceback
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
