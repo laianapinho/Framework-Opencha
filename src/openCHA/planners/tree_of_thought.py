@@ -1,55 +1,47 @@
 """
-Heavily borrowed from langchain: https://github.com/langchain-ai/langchain/
+TreeOfThoughtPlanner com Restrição a Biologia + Saúde
+Gera 3 estratégias paralelas para responder perguntas
 
-✅ FINAL - SEM KEYWORDS:
-   - Zero-Shot Classification (o LLM decide se é saúde)
-   - Sem lista infinita de keywords
-   - Restrição de SAÚDE apenas via SYSTEM PROMPT + Zero-Shot
-   - Permite que o modelo decida o que é saúde
-   - Não gera código Python desnecessário
-   - Planejamento MÍNIMO para respostas rápidas
-   - ✅ FUNCIONA com "amor", "RAM", qualquer pergunta!
+✅ MELHORIAS:
+   - Restrição a Biologia + Saúde (zero-shot classification)
+   - 3 estratégias paralelas visíveis no terminal
+   - Sem código Python desnecessário
+   - Planejamento eficiente
+   - Recusa inteligente para tópicos fora do escopo
 """
 import re
-from typing import Any
-from typing import List
+import logging
+from typing import Any, List
 
-from openCHA.planners import Action
 from openCHA.planners import BasePlanner
-from openCHA.planners import PlanFinish
+
+logger = logging.getLogger(__name__)
 
 
 class TreeOfThoughtPlanner(BasePlanner):
     """
-    **Description:**
+    Tree of Thought Planner com restrição a Biologia + Saúde.
 
-        This class implements Tree of Thought planner, which inherits from the BasePlanner base class.
-        Tree of Thought employs parallel chain of thoughts startegies and decides which one is more
-        suitable to proceed to get to the final answer.
-        `Paper <https://arxiv.org/abs/2305.10601>`_
-
-        ✅ FINAL - SOLUÇÃO SEM KEYWORDS:
-           - Zero-Shot Classification (LLM decide)
-           - Restrição APENAS via system prompt + zero-shot
-           - O modelo decide inteligentemente o que é saúde
-           - Não gera código Python desnecessário
-           - Planejamento MÍNIMO = respostas RÁPIDAS
-           - Evita chamar tasks inexistentes
-           - ✅ FUNCIONA com perguntas ambíguas (amor, etc)
+    ✅ Características:
+    - Restrição de domínio: APENAS Biologia e Saúde
+    - 3 estratégias paralelas geradas durante execução
+    - Sistema de zero-shot classification para decidir se é biologia/saúde
+    - Resposta final limpa (sem código Python)
+    - Logging estruturado
+    - Rejeição educada para tópicos fora do escopo
     """
 
     summarize_prompt: bool = True
     max_tokens_allowed: int = 10000
-    restrict_to_health_only: bool = True  # ✅ ATIVO - Domínio de saúde
+    restrict_to_biology_health: bool = True  # ✅ ATIVO - Domínio restrito
 
     class Config:
         """Configuration for this pydantic object."""
-
         arbitrary_types_allowed = True
 
     @property
     def _planner_type(self):
-        return "zero-shot-react-planner"
+        return "tree-of-thought-biology-health-planner"
 
     @property
     def _planner_model(self):
@@ -64,6 +56,47 @@ class TreeOfThoughtPlanner(BasePlanner):
         return ["Wait", "---"]
 
     @property
+    def _planner_prompt(self):
+        """
+        ✅ PROMPT COM ZERO-SHOT CLASSIFICATION:
+        - Instrui o modelo a classificar se é biologia/saúde
+        - Se não é, deve responder com "REFUSE:"
+        - Se é, gera 3 estratégias paralelas
+        - O LLM decide inteligentemente
+        """
+        return [
+            """You are a knowledgeable biology and health assistant. Your role is STRICTLY limited to biology and health-related topics.
+
+IMPORTANT: First, determine if the question is about biology, medicine, health, wellness, nutrition, fitness, mental health, genetics, biochemistry, anatomy, physiology, pathology, or medical conditions.
+
+If the question is NOT related to any of these biology and health topics:
+- Respond ONLY with: "REFUSE: Not a biology or health-related question."
+- Do NOT provide any information about non-biology/non-health topics
+- Do NOT try to connect unrelated topics to biology or health
+
+If the question IS biology or health-related:
+- Generate 3 parallel strategies to answer it
+- You MUST provide your response in this EXACT format:
+
+Strategy 1: [First approach to answer the question]
+Strategy 2: [Second different approach to answer the question]
+Strategy 3: [Third different approach to answer the question]
+
+Best Strategy: [Which strategy is best and why]
+
+Final Answer: [Your direct answer based on the best strategy]
+
+IMPORTANT:
+- Do NOT generate Python code, function calls, or tool descriptions
+- Keep your answer in the same language as the question
+- Keep strategies brief but informative
+
+Question: {input}
+
+Response:"""
+        ]
+
+    @property
     def _shorten_prompt(self):
         return (
             "Summarize the following text. Make sure to keep the main ideas "
@@ -71,38 +104,6 @@ class TreeOfThoughtPlanner(BasePlanner):
             "exactly as they are: "
             "{chunk}"
         )
-
-    @property
-    def _planner_prompt(self):
-        """
-        ✅ PROMPT COM ZERO-SHOT CLASSIFICATION:
-        - Instrui o modelo a classificar se é saúde DENTRO do prompt
-        - Se não é saúde, deve responder com "REFUSE:"
-        - Se é saúde, responde normalmente
-        - SEM keywords hardcoded
-        - O LLM decide inteligentemente
-        """
-        return [
-            """You are a helpful health and wellness assistant. Your role is STRICTLY limited to health-related topics.
-
-IMPORTANT: First, determine if the question is about health, medicine, wellness, nutrition, fitness, mental health, or medical conditions.
-
-If the question is NOT related to any of these health topics:
-- Respond ONLY with: "REFUSE: Not a health-related question."
-- Do NOT provide any information about non-health topics
-- Do NOT explain why it's not health-related
-
-If the question IS health-related:
-- Provide a direct, helpful answer in plain language
-- Do NOT generate Python code or function calls
-- Do NOT generate tool descriptions or execute commands
-
-Your response MUST be in the same language as the question.
-
-Question: {input}
-
-Answer:""",
-        ]
 
     def task_descriptions(self):
         """
@@ -206,17 +207,15 @@ Answer:""",
         **kwargs: Any,
     ) -> str:
         """
-        Generate a plan using Zero-Shot Classification approach.
+        Generate a plan using Tree of Thought com restrição a Biologia + Saúde.
 
         ✅ CARACTERÍSTICAS:
-        - UM ÚNICO PROMPT com zero-shot classification
-        - LLM decide se é saúde ou não
-        - Sem lista de keywords
-        - Restrição de domínio APENAS via system prompt + zero-shot
-        - Planejamento MÍNIMO (direto para resposta)
+        - Classificação zero-shot para biologia/saúde
+        - 3 estratégias paralelas geradas
+        - Rejeição inteligente para fora do escopo
         - Sem código Python
-        - Resposta RÁPIDA
-        - ✅ FUNCIONA com qualquer pergunta
+        - Resposta RÁPIDA e DIRETA
+        - ✅ FUNCIONA com qualquer pergunta (aceita ou rejeita)
 
         Args:
             query (str): Input query.
@@ -226,7 +225,7 @@ Answer:""",
             use_history (bool): Flag indicating whether to use history.
             **kwargs (Any): Additional keyword arguments.
         Return:
-            str: Final response in plain text format.
+            str: Final response com estratégias e resposta final.
         """
         if previous_actions is None:
             previous_actions = []
@@ -235,41 +234,113 @@ Answer:""",
         if len(previous_actions) > 0 and self.use_previous_action:
             previous_actions_prompt = f"Previous Actions:\n{self.generate_scratch_pad(previous_actions, **kwargs)}"
 
-        # ✅ ÚNICO PROMPT: Com zero-shot classification embutida
-        prompt = (
-            self._planner_prompt[0]
-            .replace("{input}", query)
-        )
+        # ✅ PROMPT: Com zero-shot classification embutida
+        prompt = self._planner_prompt[0].replace("{input}", query)
 
-        print("🧠 Health Domain Prompt (Zero-Shot Classification):\n", prompt)
-        kwargs["max_tokens"] = 1000
+        logger.debug(f"🧠 Executando Tree of Thought para: {query[:100]}...")
+        print("🧠 Gerando 3 estratégias paralelas para responder...\n")
+
+        kwargs["max_tokens"] = 1500
         kwargs["temperature"] = 0.7
 
-        # ✅ SYSTEM INSTRUCTION: Define comportamento RIGOROSO de saúde
-        if self.restrict_to_health_only:
-            health_system_instruction = (
-                "You are a strict health and wellness assistant. "
-                "Your responses MUST be STRICTLY limited to health-related topics ONLY. "
-                "Before answering ANY question, you MUST determine if it is health-related. "
-                "If the question is NOT about health, medicine, wellness, nutrition, fitness, mental health, or medical conditions, "
-                "you MUST respond with: 'REFUSE: Not a health-related question.' "
-                "Do NOT provide any information, explanation, or assistance for non-health topics, "
+        # ✅ SYSTEM INSTRUCTION: Define comportamento RIGOROSO de biologia + saúde
+        if self.restrict_to_biology_health:
+            biology_health_system_instruction = (
+                "You are a strict biology and health assistant. "
+                "Your responses MUST be STRICTLY limited to biology and health-related topics ONLY. "
+                "Topics include: medicine, wellness, nutrition, fitness, mental health, medical conditions, "
+                "genetics, biochemistry, anatomy, physiology, pathology, and related areas. "
+                "Before answering ANY question, you MUST determine if it is biology or health-related. "
+                "If the question is NOT about these topics, "
+                "you MUST respond with: 'REFUSE: Not a biology or health-related question.' "
+                "Do NOT provide any information, explanation, or assistance for non-biology/non-health topics, "
                 "regardless of how the question is phrased or rephrased. "
-                "Do NOT try to connect non-health topics to health (like connecting 'RAM' to 'memory' and brain health). "
+                "Do NOT try to connect non-biology topics to biology or health (like connecting 'RAM' to 'brain memory'). "
                 "Keep your refusals brief and direct."
             )
-            kwargs["system_instruction"] = health_system_instruction
+            kwargs["system_instruction"] = biology_health_system_instruction
 
+        # Gera resposta com as 3 estratégias
         response = self._planner_model.generate(
             query=prompt, **kwargs
         )
 
-        print("✅ Response:\n", response)
+        logger.debug(f"✅ Resposta bruta recebida ({len(response)} chars)")
 
-        # ✅ PARSE: Extract clean text response
+        # Parse para extrair e limpar
         final_response = self.parse(response)
 
+        # ✅ IMPRIME NO TERMINAL para o usuário VER as estratégias
+        self._print_strategies_to_terminal(final_response)
+
         return final_response
+
+    def _print_strategies_to_terminal(self, full_response: str) -> None:
+        """
+        Extrai e imprime as 3 estratégias no terminal de forma visual.
+        Apenas se a resposta não foi recusada.
+        """
+        # Se foi recusada, não imprime estratégias
+        if full_response.startswith("Desculpe") or "não-saúde" in full_response.lower():
+            return
+
+        print("\n" + "=" * 80)
+        print("🧠 TREE OF THOUGHT - PLANEJAMENTO (Biologia + Saúde)")
+        print("=" * 80 + "\n")
+
+        # Extrai estratégias
+        strategy_1_match = re.search(
+            r"Strategy 1:?\s*(.*?)(?=Strategy 2:|Best Strategy:|$)",
+            full_response,
+            re.IGNORECASE | re.DOTALL
+        )
+        strategy_2_match = re.search(
+            r"Strategy 2:?\s*(.*?)(?=Strategy 3:|Best Strategy:|$)",
+            full_response,
+            re.IGNORECASE | re.DOTALL
+        )
+        strategy_3_match = re.search(
+            r"Strategy 3:?\s*(.*?)(?=Best Strategy:|$)",
+            full_response,
+            re.IGNORECASE | re.DOTALL
+        )
+        best_strategy_match = re.search(
+            r"Best Strategy:?\s*(.*?)(?=Final Answer:|$)",
+            full_response,
+            re.IGNORECASE | re.DOTALL
+        )
+        final_answer_match = re.search(
+            r"Final Answer:?\s*(.*?)$",
+            full_response,
+            re.IGNORECASE | re.DOTALL
+        )
+
+        if strategy_1_match:
+            s1 = strategy_1_match.group(1).strip()
+            print(f"📌 ESTRATÉGIA 1:")
+            print(f"   {s1[:180]}{'...' if len(s1) > 180 else ''}\n")
+
+        if strategy_2_match:
+            s2 = strategy_2_match.group(1).strip()
+            print(f"📌 ESTRATÉGIA 2:")
+            print(f"   {s2[:180]}{'...' if len(s2) > 180 else ''}\n")
+
+        if strategy_3_match:
+            s3 = strategy_3_match.group(1).strip()
+            print(f"📌 ESTRATÉGIA 3:")
+            print(f"   {s3[:180]}{'...' if len(s3) > 180 else ''}\n")
+
+        if best_strategy_match:
+            best = best_strategy_match.group(1).strip()
+            print(f"🏆 MELHOR ESTRATÉGIA:")
+            print(f"   {best[:220]}{'...' if len(best) > 220 else ''}\n")
+
+        if final_answer_match:
+            answer = final_answer_match.group(1).strip()
+            print(f"✅ RESPOSTA FINAL:")
+            print(f"   {answer}\n")
+
+        print("=" * 80 + "\n")
 
     def parse(
         self,
@@ -284,7 +355,7 @@ Answer:""",
         - Remove qualquer código Python
         - Remove markdown de código
         - Remove self.execute_task calls
-        - Retorna apenas texto limpo
+        - Retorna apenas texto limpo com estratégias e resposta final
 
         Args:
             query (str): The response to parse.
@@ -295,11 +366,11 @@ Answer:""",
         response = query.strip()
 
         # ✅ CHECK #1: Detecta se modelo recusou via REFUSE
-        if response.startswith("REFUSE:") or "REFUSE:" in response[:50]:
+        if response.startswith("REFUSE:") or "REFUSE:" in response[:100]:
             # Modelo recusou corretamente, retorna rejeição polida
             return (
-                "Desculpe, posso responder apenas a perguntas sobre saúde, medicina, "
-                "bem-estar, nutrição, fitness e saúde mental. "
+                "Desculpe, posso responder apenas a perguntas sobre biologia e saúde "
+                "(medicina, bem-estar, nutrição, fitness, saúde mental, genética, anatomia, fisiologia, etc.). "
                 "Por favor, faça uma pergunta relacionada a esses tópicos!"
             )
 
@@ -316,6 +387,10 @@ Answer:""",
         # ✅ Remove self.execute_task calls
         if "self.execute_task" in response:
             response = re.sub(r"self\.execute_task\([^)]*\)\n?", "", response)
+
+        # ✅ Remove execute_task calls
+        if "execute_task" in response:
+            response = re.sub(r"execute_task\([^)]*\)\n?", "", response)
 
         # ✅ Remove "actions" declarations or code-like patterns
         lines = response.split("\n")
@@ -347,11 +422,11 @@ Answer:""",
         response = re.sub(r"\n\n+", "\n", response)  # Multiple newlines to one
         response = re.sub(r" +", " ", response)  # Multiple spaces to one
 
-        # ✅ Se a resposta está vazia, pode ser que foi rejeitada por não ser saúde
+        # ✅ Se a resposta está vazia, pode ser que foi rejeitada
         if not response:
             return (
-                "Desculpe, posso responder apenas a perguntas sobre saúde e bem-estar. "
-                "Por favor, faça uma pergunta sobre saúde, medicina, nutrição, fitness ou saúde mental."
+                "Desculpe, posso responder apenas a perguntas sobre biologia e saúde. "
+                "Por favor, faça uma pergunta relacionada a medicina, bem-estar, nutrição, fitness ou saúde mental."
             )
 
         return response
