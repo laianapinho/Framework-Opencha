@@ -1,23 +1,36 @@
+# openCHA/interface/base.py
 import gradio as gr
 import logging
-from typing import List, Tuple, Any, Dict, Optional
+from typing import List, Tuple, Optional, Any
+
+from openCHA.benchmark_ui_helpers import (
+    load_dataset_from_gradio_file,
+    run_json_benchmark,
+    extract_model_response_from_report,
+)
+from openCHA.benchmark_evaluator import BenchmarkEvaluator
 
 logger = logging.getLogger(__name__)
 
 
 class Interface:
     """
-    Gradio UI com duas abas:
+    Gradio UI com 3 abas:
       1) Chat normal (single agent)
-      2) Comparação Multi-LLM (LLM Arena-style cards)
+      2) Comparação Multi-LLM (Arena) — cards lado a lado
+      3) Benchmark JSON (upload + escolher N + rodar automático)
 
-    ✅ CORRIGIDO v3:
-       - Sem validação duplicada (Orchestrator já faz)
-       - Arena valida REFUSE
+    Correções aplicadas:
+      - Arena: cards LADO A LADO (Row + Columns)
+      - Arena: usa extract_model_response_from_report (função correta)
+      - Benchmark: usa run_single_question wrapper (compatível com assinatura real do respond)
+      - Benchmark: tabela compatível com headers + ok_* (para CLOSED)
     """
 
     def __init__(self):
         self.gr = gr
+        self._benchmark_loader = None
+        self._benchmark_info = None
         logger.info("Interface inicializada")
 
     def prepare_interface(
@@ -47,37 +60,22 @@ class Interface:
                     font-weight: 700;
                     margin-bottom: 6px;
                 }
-                .arena-meta {
-                    font-size: 12px;
-                    opacity: 0.8;
-                    margin-bottom: 10px;
-                    line-height: 1.35;
-                }
                 .arena-answer {
                     font-size: 14px;
                     line-height: 1.45;
                     white-space: pre-wrap;
                 }
-                .badge {
-                    display: inline-block;
-                    padding: 2px 8px;
-                    border-radius: 999px;
-                    font-size: 12px;
-                    border: 1px solid rgba(0,0,0,0.12);
-                    margin-right: 6px;
-                }
-                .badge-fast { border-color: rgba(34,197,94,0.35); }
-                .badge-slow { border-color: rgba(239,68,68,0.35); }
                 .small-note { font-size: 12px; opacity: 0.75; }
-            """
+            """,
         ) as demo:
 
             gr.Markdown(
                 """
                 # 🔷 openCHA
-                **Duas formas de usar:**
-                - **Chat normal** (um agente)
-                - **Comparação Multi-LLM** (estilo LLM Arena, cards lado a lado)
+                **Modos:**
+                - **Chat normal**
+                - **Arena Multi-LLM**
+                - **Benchmark JSON** (upload + escolher quantidade)
                 """
             )
 
@@ -85,56 +83,25 @@ class Interface:
             # API KEYS (GLOBAL)
             # =========================
             with gr.Accordion("🔑 Configuração de API Keys", open=True):
-                gr.Markdown("*Configure suas chaves de API antes de começar*")
-
                 with gr.Row():
-                    openai_key = gr.Textbox(
-                        label="🟢 OpenAI API Key (ChatGPT)",
-                        type="password",
-                        value="",
-                        placeholder="sk-...",
-                    )
-                    serp_key = gr.Textbox(
-                        label="🔍 SERP API Key",
-                        type="password",
-                        value="",
-                        placeholder="Sua chave do SERPAPI",
-                    )
-
+                    openai_key = gr.Textbox(label="🟢 OpenAI API Key", type="password")
+                    serp_key = gr.Textbox(label="🔍 SERP API Key", type="password")
                 with gr.Row():
-                    gemini_key = gr.Textbox(
-                        label="🔵 Gemini API Key",
-                        type="password",
-                        value="",
-                        placeholder="Sua chave do Google Gemini",
-                    )
-                    deepseek_key = gr.Textbox(
-                        label="🟣 DeepSeek API Key",
-                        type="password",
-                        value="",
-                        placeholder="Sua chave do DeepSeek",
-                    )
+                    gemini_key = gr.Textbox(label="🔵 Gemini API Key", type="password")
+                    deepseek_key = gr.Textbox(label="🟣 DeepSeek API Key", type="password")
 
             # =========================
             # CONFIG DO AGENTE (GLOBAL)
             # =========================
             with gr.Accordion("⚙️ Configurações do Agente", open=False):
                 with gr.Row():
-                    use_history = gr.Checkbox(
-                        label="💬 Usar histórico da conversa",
-                        value=True,
-                    )
+                    use_history = gr.Checkbox(label="💬 Usar histórico", value=True)
                     tasks_selector = gr.CheckboxGroup(
-                        choices=available_tasks,
-                        label="🛠️ Ferramentas (Tasks) disponíveis",
-                        value=[],
+                        choices=available_tasks, label="🛠️ Tasks", value=[]
                     )
 
             gr.Markdown("---")
 
-            # =========================
-            # ABAS
-            # =========================
             with gr.Tabs():
 
                 # =========================================================
@@ -146,6 +113,8 @@ class Interface:
                         bubble_full_width=False,
                         height=520,
                         show_copy_button=True,
+                        # Se quiser remover warning no futuro:
+                        # type="messages"
                     )
 
                     with gr.Row():
@@ -171,7 +140,7 @@ class Interface:
                     def render_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
                         return [(u, a) for (u, a) in chat_history if a is not None]
 
-                    def reset_wrapper_chat() -> Tuple[List, List]:
+                    def reset_wrapper_chat():
                         try:
                             reset()
                             return [], []
@@ -201,22 +170,15 @@ class Interface:
                                 msg, openai, serp, gemini, deepseek,
                                 chat_hist[:-1],
                                 use_hist, tasks,
-                                False,  # use_multi_llm = False
-                                None    # compare_models = None
+                                False,  # use_multi_llm
+                                None
                             )
-
-                            # ✅ ORCHESTRATOR JÁ RETORNA MENSAGEM CORRETA
-                            # Se foi REFUSE, Orchestrator já retorna:
-                            # "Desculpe, posso responder apenas a perguntas sobre saúde..."
-                            # Não precisa de validação aqui
-
                             yield empty_msg, updated
                         except Exception as e:
                             logger.error(f"Erro respond_chat_wrapper: {e}", exc_info=True)
                             chat_hist[-1] = (msg, f"❌ Erro: {str(e)}")
                             yield "", chat_hist
 
-                    # Eventos Chat normal
                     msg_chat.submit(
                         fn=respond_chat_wrapper,
                         inputs=[msg_chat, openai_key, serp_key, gemini_key, deepseek_key, state_chat_history, use_history, tasks_selector],
@@ -244,297 +206,216 @@ class Interface:
                     )
 
                 # =========================================================
-                # ABA 2: MULTI-LLM ARENA
+                # ABA 2: MULTI-LLM ARENA (LADO A LADO)
                 # =========================================================
                 with gr.Tab("🏟️ Comparação Multi-LLM"):
-                    gr.Markdown(
-                        """
-                        **Modo LLM Arena**: escreva um prompt e veja respostas lado a lado.
-                        """
+                    gr.Markdown("**Escreva um prompt e veja respostas lado a lado.**")
+
+                    compare_models = gr.CheckboxGroup(
+                        label="🤖 Modelos",
+                        choices=["chatgpt", "gemini", "deepseek"],
+                        value=["chatgpt", "gemini"],
                     )
 
-                    with gr.Row():
-                        compare_models = gr.CheckboxGroup(
-                            label="🤖 Modelos",
-                            choices=["chatgpt", "gemini", "deepseek"],
-                            value=["chatgpt", "gemini"],
-                            scale=3,
-                        )
-                        show_metrics = gr.Checkbox(
-                            label="📊 Mostrar métricas (tempo/tokens)",
-                            value=True,
-                            scale=1,
-                        )
-
-                    with gr.Row():
-                        msg_arena = gr.Textbox(
-                            placeholder="Digite a pergunta para comparar os modelos...",
-                            lines=3,
-                            scale=8,
-                            show_label=False,
-                        )
-                        with gr.Column(scale=1, min_width=140):
-                            btn_send_arena = gr.Button("⚔️ Comparar", variant="primary")
-                            btn_clear_arena = gr.Button("🧹 Limpar", variant="secondary")
-
-                    # Saídas Arena (cards)
-                    with gr.Row(elem_classes="arena-grid"):
-                        card_chatgpt = gr.Markdown(elem_classes="arena-card")
-                        card_gemini = gr.Markdown(elem_classes="arena-card")
-                        card_deepseek = gr.Markdown(elem_classes="arena-card")
-
+                    msg_arena = gr.Textbox(placeholder="Digite a pergunta...", lines=3, show_label=False)
+                    btn_send_arena = gr.Button("⚔️ Comparar", variant="primary")
                     arena_status = gr.Markdown()
 
-                    def _fmt_ms(x: Optional[float]) -> str:
-                        if x is None:
-                            return "-"
-                        return f"{x:.2f} ms"
+                    # ✅ lado a lado
+                    with gr.Row(equal_height=True, elem_classes="arena-grid"):
+                        with gr.Column(scale=1, min_width=320):
+                            card_chatgpt = gr.Markdown(elem_classes="arena-card")
+                        with gr.Column(scale=1, min_width=320):
+                            card_gemini = gr.Markdown(elem_classes="arena-card")
+                        with gr.Column(scale=1, min_width=320):
+                            card_deepseek = gr.Markdown(elem_classes="arena-card")
 
-                    def _build_card(
-                        model_key: str,
-                        title: str,
-                        response: Optional[str],
-                        error: Optional[str],
-                        time_ms: Optional[float],
-                        planning_ms: Optional[float],
-                        gen_ms: Optional[float],
-                        is_fastest: bool,
-                        show_metrics_flag: bool,
-                    ) -> str:
-                        badge = ""
-                        if show_metrics_flag and time_ms is not None:
-                            badge = f"<span class='badge {'badge-fast' if is_fastest else ''}'>⏱ {time_ms:.0f} ms</span>"
-
-                        meta_lines = []
-                        if show_metrics_flag:
-                            meta_lines.append(f"{badge}")
-                            meta_lines.append(f"<span class='badge'>🧠 {planning_ms:.0f} ms</span>" if planning_ms is not None else "<span class='badge'>🧠 -</span>")
-                            meta_lines.append(f"<span class='badge'>✍️ {gen_ms:.0f} ms</span>" if gen_ms is not None else "<span class='badge'>✍️ -</span>")
-
-                        meta_html = ""
-                        if show_metrics_flag:
-                            meta_html = "<div class='arena-meta'>" + " ".join(meta_lines) + "</div>"
-
-                        if error:
-                            body = f"❌ **{error}**\n\nPosso responder apenas sobre:\n• Saúde e medicina\n• Bem-estar\n• Nutrição\n• Fitness\n• Saúde mental"
-                        else:
-                            body = response or "—"
-
-                        return f"""
-<div class="arena-title">{title}</div>
-{meta_html}
-<div class="arena-answer">{body}</div>
-"""
-
-                    def extract_time(report_text: str, model_upper: str, label: str) -> Optional[float]:
-                        """Extrai tempos do relatório"""
-                        if not report_text:
-                            return None
-                        key = f"🤖 {model_upper}"
-                        idx = report_text.find(key)
-                        if idx == -1:
-                            return None
-                        nxt = report_text.find("🤖 ", idx + 1)
-                        block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
-
-                        mapping = {
-                            "Tempo total": "⏱️ Tempo total:",
-                            "Planejamento": "Planejamento:",
-                            "Geração": "Geração:"
-                        }
-                        prefix = mapping.get(label)
-                        if not prefix:
-                            return None
-
-                        for line in block.splitlines():
-                            line = line.strip()
-                            if prefix in line:
-                                try:
-                                    num = line.split(prefix, 1)[1].strip()
-                                    num = num.replace("ms", "").strip()
-                                    return float(num)
-                                except Exception:
-                                    return None
-                        return None
-
-                    def extract_block(report_text: str, model_upper: str) -> Tuple[str, bool]:
-                        """
-                        Extrai bloco de resposta do relatório.
-
-                        ✅ CORRIGIDO v3: report_text como parâmetro
-
-                        Returns:
-                            (response_text, is_refused)
-                        """
-                        if not report_text:
-                            return "", False
-
-                        key = f"🤖 {model_upper}"
-                        idx = report_text.find(key)
-                        if idx == -1:
-                            return "", False
-
-                        nxt = report_text.find("🤖 ", idx + 1)
-                        block = report_text[idx:] if nxt == -1 else report_text[idx:nxt]
-
-                        # ✅ Detecta REFUSE (da resposta do Orchestrator)
-                        if "Desculpe, posso responder apenas" in block:
-                            return "", True  # Retorna vazio com flag is_refused=True
-
-                        marker = "📝 Resposta:"
-                        m = block.find(marker)
-                        if m != -1:
-                            return block[m + len(marker):].strip(), False
-
-                        return block.strip(), False
-
-                    def respond_arena(
-                        msg: str,
-                        openai: str,
-                        serp: str,
-                        gemini: str,
-                        deepseek: str,
-                        use_hist: bool,
-                        tasks: List[str],
-                        models: List[str],
-                        show_metrics_flag: bool,
-                    ):
+                    def respond_arena(msg, openai, serp, gemini, deepseek, use_hist, tasks, models):
                         if not msg or not msg.strip():
-                            return (
-                                "⚠️ Digite uma mensagem.",
-                                "", "", ""
-                            )
+                            return "⚠️ Digite uma mensagem.", "", "", ""
 
                         if not models:
-                            return (
-                                "⚠️ Selecione pelo menos 1 modelo.",
-                                "", "", ""
-                            )
+                            return "⚠️ Selecione pelo menos 1 modelo.", "", "", ""
 
-                        # (Opcional) valida keys pelos modelos escolhidos
-                        missing = []
-                        if "chatgpt" in models and not openai:
-                            missing.append("OpenAI")
-                        if "gemini" in models and not gemini:
-                            missing.append("Gemini")
-                        if "deepseek" in models and not deepseek:
-                            missing.append("DeepSeek")
-                        if missing:
-                            return (
-                                f"⚠️ API Key faltando: {', '.join(missing)}",
-                                "", "", ""
-                            )
+                        yield f"⏳ Comparando {', '.join(models)}...", "", "", ""
 
-                        status = f"⏳ Comparando {', '.join(models)}..."
-                        yield status, "", "", ""
-
-                        # Chama seu respond() em modo multi
-                        empty_msg, updated_hist = respond(
+                        _, updated_hist = respond(
                             msg, openai, serp, gemini, deepseek,
-                            [],                 # arena não precisa do histórico visual aqui
+                            [],
                             use_hist, tasks,
-                            True,               # use_multi_llm = True
-                            models              # compare_models
+                            True,
+                            models
                         )
 
-                        # O respond() no seu openCHA coloca um item no chat_history com a string formatada.
                         report_text = ""
                         if updated_hist and updated_hist[-1] and len(updated_hist[-1]) == 2:
                             report_text = updated_hist[-1][1] or ""
 
-                        # ✅ Extrai respostas E status de recusa
-                        r_chatgpt, refused_cg = extract_block(report_text, "CHATGPT") if "chatgpt" in models else ("", False)
-                        r_gemini, refused_gm = extract_block(report_text, "GEMINI") if "gemini" in models else ("", False)
-                        r_deepseek, refused_ds = extract_block(report_text, "DEEPSEEK") if "deepseek" in models else ("", False)
+                        def pick(model_key: str) -> str:
+                            # relatório geralmente usa CHATGPT/GEMINI/DEEPSEEK
+                            return extract_model_response_from_report(report_text, model_key.upper()) or "—"
 
-                        # tempos
-                        t_chatgpt = extract_time(report_text, "CHATGPT", "Tempo total") if "chatgpt" in models else None
-                        p_chatgpt = extract_time(report_text, "CHATGPT", "Planejamento") if "chatgpt" in models else None
-                        g_chatgpt = extract_time(report_text, "CHATGPT", "Geração") if "chatgpt" in models else None
+                        out_cg = pick("chatgpt") if "chatgpt" in models else "—"
+                        out_gm = pick("gemini") if "gemini" in models else "—"
+                        out_ds = pick("deepseek") if "deepseek" in models else "—"
 
-                        t_gemini = extract_time(report_text, "GEMINI", "Tempo total") if "gemini" in models else None
-                        p_gemini = extract_time(report_text, "GEMINI", "Planejamento") if "gemini" in models else None
-                        g_gemini = extract_time(report_text, "GEMINI", "Geração") if "gemini" in models else None
-
-                        t_deepseek = extract_time(report_text, "DEEPSEEK", "Tempo total") if "deepseek" in models else None
-                        p_deepseek = extract_time(report_text, "DEEPSEEK", "Planejamento") if "deepseek" in models else None
-                        g_deepseek = extract_time(report_text, "DEEPSEEK", "Geração") if "deepseek" in models else None
-
-                        # mais rápido
-                        times_map = {
-                            "chatgpt": t_chatgpt,
-                            "gemini": t_gemini,
-                            "deepseek": t_deepseek
-                        }
-                        valid = {k: v for k, v in times_map.items() if isinstance(v, (int, float))}
-                        fastest_key = min(valid, key=valid.get) if valid else None
-
-                        # Passa info de recusa como erro ao _build_card()
-                        card1 = _build_card(
-                            "chatgpt", "ChatGPT",
-                            r_chatgpt if "chatgpt" in models else "—",
-                            "Domain restriction" if refused_cg else None,
-                            t_chatgpt, p_chatgpt, g_chatgpt,
-                            fastest_key == "chatgpt",
-                            show_metrics_flag,
-                        )
-                        card2 = _build_card(
-                            "gemini", "Gemini",
-                            r_gemini if "gemini" in models else "—",
-                            "Domain restriction" if refused_gm else None,
-                            t_gemini, p_gemini, g_gemini,
-                            fastest_key == "gemini",
-                            show_metrics_flag,
-                        )
-                        card3 = _build_card(
-                            "deepseek", "DeepSeek",
-                            r_deepseek if "deepseek" in models else "—",
-                            "Domain restriction" if refused_ds else None,
-                            t_deepseek, p_deepseek, g_deepseek,
-                            fastest_key == "deepseek",
-                            show_metrics_flag,
+                        yield (
+                            "✅ Pronto.",
+                            f"### ChatGPT\n\n{out_cg}",
+                            f"### Gemini\n\n{out_gm}",
+                            f"### DeepSeek\n\n{out_ds}",
                         )
 
-                        status_done = "✅ Pronto. Compare as respostas nos cards."
-                        yield status_done, card1, card2, card3
-
-                    def clear_arena():
-                        return "", "", "", ""
-
-                    # Eventos Arena
-                    msg_arena.submit(
-                        fn=respond_arena,
-                        inputs=[msg_arena, openai_key, serp_key, gemini_key, deepseek_key, use_history, tasks_selector, compare_models, show_metrics],
-                        outputs=[arena_status, card_chatgpt, card_gemini, card_deepseek],
-                    )
                     btn_send_arena.click(
                         fn=respond_arena,
-                        inputs=[msg_arena, openai_key, serp_key, gemini_key, deepseek_key, use_history, tasks_selector, compare_models, show_metrics],
-                        outputs=[arena_status, card_chatgpt, card_gemini, card_deepseek],
-                    )
-                    btn_clear_arena.click(
-                        fn=clear_arena,
-                        inputs=[],
+                        inputs=[msg_arena, openai_key, serp_key, gemini_key, deepseek_key, use_history, tasks_selector, compare_models],
                         outputs=[arena_status, card_chatgpt, card_gemini, card_deepseek],
                     )
 
-            gr.Markdown(
-                """
-                ---
-                <div style='text-align:center; opacity:0.75; font-size:12px;'>
-                  openCHA • Chat normal + Comparação Multi-LLM (Arena)
-                </div>
-                """
+                # =========================================================
+                # ABA 3: BENCHMARK JSON (N questões)
+                # =========================================================
+                with gr.Tab("📁 Benchmark JSON"):
+                    gr.Markdown(
+                        """
+                        **Upload de JSON** → escolha **quantidade de questões** → **rodar automático**
+                        (sem selecionar uma a uma)
+                        """
+                    )
+
+                    file_json = gr.File(label="Envie o JSON", file_types=[".json"], type="binary")
+                    btn_load = gr.Button("✅ Carregar JSON", variant="primary")
+                    load_status = gr.Markdown()
+
+                    models_bench = gr.CheckboxGroup(
+                        label="🤖 Modelos",
+                        choices=["chatgpt", "gemini", "deepseek"],
+                        value=["chatgpt", "gemini"],
+                    )
+
+                    num_samples = gr.Slider(
+                        minimum=1,
+                        maximum=500,
+                        value=10,
+                        step=1,
+                        label="Quantidade de questões",
+                    )
+
+                    random_sample = gr.Checkbox(label="🎲 Seleção aleatória", value=False)
+
+                    btn_run = gr.Button("🚀 Rodar Benchmark", variant="primary")
+                    bench_report = gr.Textbox(label="Relatório", lines=25)
+
+                    bench_table = gr.Dataframe(
+                        headers=[
+                            "id", "expected",
+                            "chatgpt", "gemini", "deepseek",
+                            "ok_chatgpt", "ok_gemini", "ok_deepseek"
+                        ],
+                        datatype=["str"] * 8,
+                        row_count=5,
+                        col_count=(8, "fixed"),
+                        wrap=True,
+                    )
+
+                    def do_load(file_obj):
+                        try:
+                            loader, info = load_dataset_from_gradio_file(file_obj)
+                            self._benchmark_loader = loader
+                            self._benchmark_info = info
+                            stats = info["stats"]
+                            msg = (
+                                f"✅ **Carregado!**\n\n"
+                                f"• Total: **{stats.get('total_items')}**\n"
+                                f"• Tipo: **{info.get('dataset_type', '').upper()}**\n"
+                                f"• Campos: pergunta=`{info['mapping'].get('question_field')}`, "
+                                f"resposta=`{info['mapping'].get('answer_field')}`\n"
+                            )
+                            return msg
+                        except Exception as e:
+                            logger.error(f"Erro load JSON: {e}", exc_info=True)
+                            return f"❌ Erro ao carregar JSON: {e}"
+
+                    def do_run(file_obj, models, n, rnd, openai, serp, gemini, deepseek, use_hist, tasks):
+                        # garante loader
+                        if self._benchmark_loader is None:
+                            loader, info = load_dataset_from_gradio_file(file_obj)
+                            self._benchmark_loader = loader
+                            self._benchmark_info = info
+
+                        # wrapper compatível com engine do benchmark e com assinatura real do respond()
+                        def run_single_question(
+                            question: str,
+                            use_multi_llm: bool = True,
+                            compare_models: Optional[List[str]] = None
+                        ) -> str:
+                            _empty, updated_hist = respond(
+                                question,
+                                openai, serp, gemini, deepseek,
+                                [],          # sem histórico no benchmark (evita contaminação)
+                                use_hist,
+                                tasks,
+                                True,        # força multi-llm
+                                compare_models,
+                            )
+                            if updated_hist and updated_hist[-1] and len(updated_hist[-1]) == 2:
+                                return updated_hist[-1][1] or ""
+                            return ""
+
+                        report, rows = run_json_benchmark(
+                            run_single_question=run_single_question,
+                            loader=self._benchmark_loader,
+                            models=models,
+                            num_samples=int(n),
+                            show_per_question=True,
+                        )
+
+                        # tabela com colunas ok_* quando dataset_type == closed
+                        evaluator = BenchmarkEvaluator()
+
+                        def ok_flag(dataset_type: str, expected: Any, answer: str) -> str:
+                            if (dataset_type or "").lower().strip() != "closed":
+                                return ""
+                            exp = str(expected).strip().lower()
+                            pred = evaluator.extract_answer(answer)
+                            return "✅" if pred == exp else "❌"
+
+                        table_rows: List[List[str]] = []
+                        for r in rows:
+                            ds_type = str(r.get("dataset_type", ""))
+                            expected = r.get("expected", "")
+                            cg = r.get("chatgpt", "")
+                            gm = r.get("gemini", "")
+                            ds = r.get("deepseek", "")
+
+                            table_rows.append([
+                                str(r.get("id", "")),
+                                str(expected),
+                                str(cg),
+                                str(gm),
+                                str(ds),
+                                ok_flag(ds_type, expected, str(cg)),
+                                ok_flag(ds_type, expected, str(gm)),
+                                ok_flag(ds_type, expected, str(ds)),
+                            ])
+
+                        return report, table_rows
+
+                    btn_load.click(fn=do_load, inputs=[file_json], outputs=[load_status])
+
+                    btn_run.click(
+                        fn=do_run,
+                        inputs=[
+                            file_json, models_bench, num_samples, random_sample,
+                            openai_key, serp_key, gemini_key, deepseek_key,
+                            use_history, tasks_selector
+                        ],
+                        outputs=[bench_report, bench_table],
+                    )
+
+            demo.launch(
+                share=share,
+                server_port=server_port,
+                server_name="0.0.0.0",
+                show_error=True,
             )
-
-        logger.info(f"Lançando interface na porta {server_port}...")
-        demo.launch(
-            share=share,
-            server_port=server_port,
-            server_name="0.0.0.0",
-            show_error=True,
-        )
-        logger.info("Interface lançada com sucesso!")
-
-    def close(self):
-        logger.info("Fechando interface...")
